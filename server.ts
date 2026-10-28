@@ -17,21 +17,32 @@ import {
   signAuthToken,
   requireAuth,
   requireOwner,
-  extractOptionalUser,
+  requireAdmin,
 } from './server/auth.ts';
 import type { AuthenticatedRequest } from './server/auth.ts';
-import type { DailyMenu } from './src/types.ts';
+import type { ButtonColorVariant, DailyMenu } from './src/types.ts';
 
 initializeDatabase();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// Support JSON payloads including compressed food photo uploads up to 4MB
 app.use(express.json({ limit: '4mb' }));
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_REGEX = /^[0-9+\-\s()]{8,15}$/;
+
+function createDefaultMenu(): DailyMenu[] {
+  return [
+    { day: 'Monday', lunch: '3 Chapati, Matki Usal, Varan Bhat, Salad', dinner: '2 Bhakri, Pithla, Steamed Rice, Thecha' },
+    { day: 'Tuesday', lunch: '3 Chapati, Bharli Vangi, Amti, Rice', dinner: '3 Chapati, Dal Tadka, Jeera Rice' },
+    { day: 'Wednesday', lunch: '3 Chapati, Veg Kolhapuri, Varan Bhat, Taak', dinner: '3 Chapati, Aloo Gobi, Dal Fry, Rice' },
+    { day: 'Thursday', lunch: '3 Chapati, Chavali Usal, Kadhi, Rice', dinner: '2 Bhakri, Zunka, Steamed Rice' },
+    { day: 'Friday', lunch: '3 Chapati, Shev Bhaji, Amti, Indrayani Rice', dinner: '3 Chapati, Akkha Masoor, Jeera Rice' },
+    { day: 'Saturday', lunch: '3 Chapati, Kala Chana Rassa, Varan Bhat', dinner: 'Dal Khichdi, Papad, Koshimbir' },
+    { day: 'Sunday', lunch: 'Sunday Feast: Masale Bhat, Chapati, Kurma, Gulab Jamun', dinner: 'Sunday Evening Closed', special: 'Gulab Jamun' },
+  ];
+}
 
 // 1. Health Check for Cloud Run
 app.get('/api/health', (_req, res) => {
@@ -42,26 +53,29 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-// 2. Authentication Routes
-app.post('/api/auth/register', (req, res) => {
+// 2. Authentication Routes (Admin & Mess Owner Only — No Student Login Required)
+app.post('/api/auth/register-owner', (req, res) => {
   try {
     const name = String(req.body.name || '').trim();
     const email = String(req.body.email || '').trim().toLowerCase();
     const phone = String(req.body.phone || '').trim();
     const password = String(req.body.password || '');
-    const role = req.body.role === 'owner' ? 'owner' : 'student';
-    const collegeOrMess = String(req.body.collegeOrMess || '').trim();
+    const messName = String(req.body.collegeOrMess || '').trim();
 
     if (name.length < 2 || name.length > 80) {
-      res.status(400).json({ error: 'Full name must be between 2 and 80 characters.' });
+      res.status(400).json({ error: 'Owner full name must be between 2 and 80 characters.' });
       return;
     }
     if (!EMAIL_REGEX.test(email)) {
       res.status(400).json({ error: 'Please enter a valid email address.' });
       return;
     }
-    if (phone && !PHONE_REGEX.test(phone)) {
+    if (!PHONE_REGEX.test(phone)) {
       res.status(400).json({ error: 'Please enter a valid 10-digit mobile number.' });
+      return;
+    }
+    if (messName.length < 3) {
+      res.status(400).json({ error: 'Please enter your Mess Name (minimum 3 characters).' });
       return;
     }
     if (password.length < 6) {
@@ -82,73 +96,51 @@ app.post('/api/auth/register', (req, res) => {
       const result = db
         .prepare(
           `INSERT INTO users (name, email, phone, password_hash, role, college_or_mess, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, 'owner', ?, ?)`
         )
-        .run(
-          name,
-          email,
-          phone || '9800000000',
-          passwordHash,
-          role,
-          collegeOrMess || (role === 'owner' ? `${name}'s Mess` : 'Kolhapur Campus'),
-          nowIso
-        );
+        .run(name, email, phone, passwordHash, messName, nowIso);
 
       const userId = Number(result.lastInsertRowid);
+      const slug = `${messName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${userId}`;
 
-      // If a brand-new Mess Owner registers, create their starter Maharashtrian mess listing automatically
-      if (role === 'owner') {
-        const messTitle = collegeOrMess.length >= 3 ? collegeOrMess : `${name}'s Gharghuti Mess`;
-        const slug = `${messTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${userId}`;
-        const defaultMenu: DailyMenu[] = [
-          { day: 'Monday', lunch: '3 Chapati, Matki Usal, Varan Bhat, Salad', dinner: '2 Bhakri, Pithla, Steamed Rice, Thecha' },
-          { day: 'Tuesday', lunch: '3 Chapati, Bharli Vangi, Amti, Rice', dinner: '3 Chapati, Dal Tadka, Jeera Rice' },
-          { day: 'Wednesday', lunch: '3 Chapati, Veg Kolhapuri, Varan Bhat, Taak', dinner: '3 Chapati, Aloo Gobi, Dal Fry, Rice' },
-          { day: 'Thursday', lunch: '3 Chapati, Chavali Usal, Kadhi, Rice', dinner: '2 Bhakri, Zunka, Steamed Rice' },
-          { day: 'Friday', lunch: '3 Chapati, Shev Bhaji, Amti, Indrayani Rice', dinner: '3 Chapati, Akkha Masoor, Jeera Rice' },
-          { day: 'Saturday', lunch: '3 Chapati, Kala Chana Rassa, Varan Bhat', dinner: 'Dal Khichdi, Papad, Koshimbir' },
-          { day: 'Sunday', lunch: 'Sunday Feast: Masale Bhat, Chapati, Kurma, Gulab Jamun', dinner: 'Sunday Evening Closed', special: 'Gulab Jamun' },
-        ];
-
-        db.prepare(
-          `INSERT INTO messes (
-            slug, owner_id, owner_name, name, category, monthly_price, half_monthly_price,
-            single_plate_price, rating, review_count, available_seats, total_seats,
-            location, area, diet_type, tiffin_delivery, speciality, tags_json,
-            weekly_menu_json, lunch_timing, dinner_timing, button_color, image_key,
-            custom_image_url, contact_phone, description, hygiene_highlights_json, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(
-          slug,
-          userId,
-          name,
-          messTitle,
-          'NEW LISTING',
-          2600,
-          1450,
-          70,
-          4.2,
-          1,
-          20,
-          45,
-          'Near College Road, Kasba Bawda, Kolhapur',
-          'Kasba Bawda',
-          'Pure Veg',
-          1,
-          'Chapati, Bhakri, Varan Bhat, Homestyle Bhaji',
-          JSON.stringify(['Homestyle', 'Pure Veg', 'Maharashtrian']),
-          JSON.stringify(defaultMenu),
-          '12:30 PM – 2:45 PM',
-          '7:30 PM – 9:30 PM',
-          'orange',
-          'pithla_bhakri',
-          null,
-          phone || '9800000000',
-          'Freshly registered homestyle Maharashtrian student mess near campus.',
-          JSON.stringify(['RO Drinking Water', 'Fresh Daily Cooking', 'Clean Dining Space']),
-          nowIso
-        );
-      }
+      db.prepare(
+        `INSERT INTO messes (
+          slug, owner_id, owner_name, name, category, monthly_price, half_monthly_price,
+          single_plate_price, rating, review_count, available_seats, total_seats,
+          location, area, diet_type, tiffin_delivery, speciality, tags_json,
+          weekly_menu_json, lunch_timing, dinner_timing, button_color, image_key,
+          custom_image_url, contact_phone, description, hygiene_highlights_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        slug,
+        userId,
+        name,
+        messName,
+        'NEW LISTING',
+        2600,
+        1450,
+        70,
+        4.2,
+        1,
+        20,
+        45,
+        'Near College Road, Kasba Bawda, Kolhapur',
+        'Kasba Bawda',
+        'Pure Veg',
+        1,
+        'Chapati, Bhakri, Varan Bhat, Homestyle Bhaji',
+        JSON.stringify(['Homestyle', 'Pure Veg', 'Maharashtrian']),
+        JSON.stringify(createDefaultMenu()),
+        '12:30 PM – 2:45 PM',
+        '7:30 PM – 9:30 PM',
+        'orange',
+        'pithla_bhakri',
+        null,
+        phone,
+        'Freshly registered homestyle Maharashtrian student mess near campus.',
+        JSON.stringify(['RO Drinking Water', 'Fresh Daily Cooking', 'Clean Dining Space']),
+        nowIso
+      );
 
       return userId;
     });
@@ -161,7 +153,7 @@ app.post('/api/auth/register', (req, res) => {
       name: string;
       email: string;
       phone: string;
-      role: 'student' | 'owner';
+      role: 'admin' | 'owner';
       college_or_mess: string;
       created_at: string;
     };
@@ -176,11 +168,10 @@ app.post('/api/auth/register', (req, res) => {
     res.status(201).json({
       token,
       user: mapUserProfile(userRow),
-      favouriteMessIds: [],
     });
   } catch (err) {
-    console.error('Register error:', err);
-    res.status(500).json({ error: 'Unable to complete registration. Please try again.' });
+    console.error('Register owner error:', err);
+    res.status(500).json({ error: 'Unable to complete owner registration. Please try again.' });
   }
 });
 
@@ -203,7 +194,7 @@ app.post('/api/auth/login', (req, res) => {
           email: string;
           phone: string;
           password_hash: string;
-          role: 'student' | 'owner';
+          role: 'admin' | 'owner';
           college_or_mess: string;
           created_at: string;
         }
@@ -213,10 +204,6 @@ app.post('/api/auth/login', (req, res) => {
       res.status(401).json({ error: 'Invalid email or password. Please check your credentials.' });
       return;
     }
-
-    const favRows = db
-      .prepare('SELECT mess_id FROM favourites WHERE user_id = ?')
-      .all(userRow.id) as { mess_id: number }[];
 
     const token = signAuthToken({
       userId: userRow.id,
@@ -228,7 +215,6 @@ app.post('/api/auth/login', (req, res) => {
     res.json({
       token,
       user: mapUserProfile(userRow),
-      favouriteMessIds: favRows.map((f) => f.mess_id),
     });
   } catch (err) {
     console.error('Login error:', err);
@@ -246,7 +232,7 @@ app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
         name: string;
         email: string;
         phone: string;
-        role: 'student' | 'owner';
+        role: 'admin' | 'owner';
         college_or_mess: string;
         created_at: string;
       }
@@ -257,13 +243,8 @@ app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
     return;
   }
 
-  const favRows = db
-    .prepare('SELECT mess_id FROM favourites WHERE user_id = ?')
-    .all(userRow.id) as { mess_id: number }[];
-
   res.json({
     user: mapUserProfile(userRow),
-    favouriteMessIds: favRows.map((f) => f.mess_id),
   });
 });
 
@@ -349,57 +330,8 @@ app.get('/api/messes/:id', (req, res) => {
   res.json({ mess: details });
 });
 
-// 4. Student Favourites Routes
-app.post('/api/messes/:id/favourite', requireAuth, (req: AuthenticatedRequest, res) => {
-  const messId = Number(req.params.id);
-  const userId = req.authUser!.userId;
-
-  const messExists = db.prepare('SELECT id FROM messes WHERE id = ?').get(messId);
-  if (!messExists) {
-    res.status(404).json({ error: 'Mess not found.' });
-    return;
-  }
-
-  const existing = db
-    .prepare('SELECT 1 FROM favourites WHERE user_id = ? AND mess_id = ?')
-    .get(userId, messId);
-
-  if (existing) {
-    db.prepare('DELETE FROM favourites WHERE user_id = ? AND mess_id = ?').run(userId, messId);
-  } else {
-    db.prepare('INSERT INTO favourites (user_id, mess_id, created_at) VALUES (?, ?, ?)').run(
-      userId,
-      messId,
-      new Date().toISOString()
-    );
-  }
-
-  const favRows = db
-    .prepare('SELECT mess_id FROM favourites WHERE user_id = ?')
-    .all(userId) as { mess_id: number }[];
-
-  res.json({
-    saved: !existing,
-    favouriteMessIds: favRows.map((r) => r.mess_id),
-  });
-});
-
-app.get('/api/favourites', requireAuth, (req: AuthenticatedRequest, res) => {
-  const userId = req.authUser!.userId;
-  const rows = db
-    .prepare(
-      `SELECT m.* FROM messes m
-       INNER JOIN favourites f ON f.mess_id = m.id
-       WHERE f.user_id = ?
-       ORDER BY f.created_at DESC`
-    )
-    .all(userId) as Parameters<typeof mapMessRow>[0][];
-
-  res.json({ messes: rows.map(mapMessRow) });
-});
-
-// 5. Subscription Enquiries Routes
-app.post('/api/messes/:id/enquiries', (req: AuthenticatedRequest, res) => {
+// 4. Open Student Subscription Enquiries (No Student Login Needed)
+app.post('/api/messes/:id/enquiries', (req, res) => {
   try {
     const messId = Number(req.params.id);
     const mess = db.prepare('SELECT id, name, available_seats FROM messes WHERE id = ?').get(messId) as
@@ -411,9 +343,8 @@ app.post('/api/messes/:id/enquiries', (req: AuthenticatedRequest, res) => {
       return;
     }
 
-    const optionalUser = extractOptionalUser(req);
-    const studentName = String(req.body.studentName || optionalUser?.name || '').trim();
-    const studentEmail = String(req.body.studentEmail || optionalUser?.email || '').trim().toLowerCase();
+    const studentName = String(req.body.studentName || '').trim();
+    const studentEmail = String(req.body.studentEmail || '').trim().toLowerCase();
     const studentPhone = String(req.body.studentPhone || '').trim();
     const planType = String(req.body.planType || 'Full Monthly (Lunch + Dinner)').trim();
     const startDate = String(req.body.startDate || '').trim();
@@ -442,11 +373,10 @@ app.post('/api/messes/:id/enquiries', (req: AuthenticatedRequest, res) => {
         `INSERT INTO enquiries (
           mess_id, student_id, student_name, student_email, student_phone,
           plan_type, start_date, message, status, owner_note, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)`
+        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)`
       )
       .run(
         messId,
-        optionalUser ? optionalUser.userId : null,
         studentName,
         studentEmail,
         studentPhone,
@@ -476,38 +406,26 @@ app.post('/api/messes/:id/enquiries', (req: AuthenticatedRequest, res) => {
   }
 });
 
-app.get('/api/student/enquiries', requireAuth, (req: AuthenticatedRequest, res) => {
-  const user = req.authUser!;
-  const rows = db
-    .prepare(
-      `SELECT e.*, m.name as mess_name, m.location as mess_location
-       FROM enquiries e
-       INNER JOIN messes m ON m.id = e.mess_id
-       WHERE e.student_id = ? OR LOWER(e.student_email) = LOWER(?)
-       ORDER BY e.id DESC`
-    )
-    .all(user.userId, user.email) as Parameters<typeof mapEnquiryRow>[0][];
-
-  res.json({ enquiries: rows.map(mapEnquiryRow) });
-});
-
-// 6. Student Ratings & Reviews Routes
-app.post('/api/messes/:id/reviews', requireAuth, (req: AuthenticatedRequest, res) => {
+// 5. Open Student Ratings & Reviews (No Student Login Needed)
+app.post('/api/messes/:id/reviews', (req, res) => {
   try {
     const messId = Number(req.params.id);
-    const user = req.authUser!;
-
     const messExists = db.prepare('SELECT id FROM messes WHERE id = ?').get(messId);
     if (!messExists) {
       res.status(404).json({ error: 'Mess listing not found.' });
       return;
     }
 
+    const studentName = String(req.body.studentName || '').trim();
     const rating = Math.round(Number(req.body.rating));
     const foodQualityRating = Math.round(Number(req.body.foodQualityRating || rating));
     const hygieneRating = Math.round(Number(req.body.hygieneRating || rating));
     const comment = String(req.body.comment || '').trim();
 
+    if (studentName.length < 2 || studentName.length > 80) {
+      res.status(400).json({ error: 'Please enter your name & branch (e.g., Rohit Patil - CSE).' });
+      return;
+    }
     if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
       res.status(400).json({ error: 'Overall rating must be between 1 and 5 stars.' });
       return;
@@ -523,11 +441,10 @@ app.post('/api/messes/:id/reviews', requireAuth, (req: AuthenticatedRequest, res
       db.prepare(
         `INSERT INTO reviews (
           mess_id, student_id, student_name, rating, food_quality_rating, hygiene_rating, comment, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`
       ).run(
         messId,
-        user.userId,
-        user.name,
+        studentName,
         rating,
         Math.min(5, Math.max(1, foodQualityRating)),
         Math.min(5, Math.max(1, hygieneRating)),
@@ -535,7 +452,6 @@ app.post('/api/messes/:id/reviews', requireAuth, (req: AuthenticatedRequest, res
         nowIso
       );
 
-      // Update mess rating & review_count smoothly
       const currentMess = db
         .prepare('SELECT rating, review_count FROM messes WHERE id = ?')
         .get(messId) as { rating: number; review_count: number };
@@ -566,7 +482,7 @@ app.post('/api/messes/:id/reviews', requireAuth, (req: AuthenticatedRequest, res
   }
 });
 
-// 7. Mess Owner Dashboard & Listing Management Routes
+// 6. Mess Owner Dashboard & Listing Management Routes
 app.get('/api/owner/dashboard', requireOwner, (req: AuthenticatedRequest, res) => {
   const ownerId = req.authUser!.userId;
   const messRow = db.prepare('SELECT * FROM messes WHERE owner_id = ? LIMIT 1').get(ownerId) as
@@ -598,17 +514,21 @@ app.get('/api/owner/dashboard', requireOwner, (req: AuthenticatedRequest, res) =
 app.put('/api/owner/mess/:id', requireOwner, (req: AuthenticatedRequest, res) => {
   try {
     const messId = Number(req.params.id);
-    const ownerId = req.authUser!.userId;
+    const user = req.authUser!;
 
-    const existing = db
-      .prepare('SELECT * FROM messes WHERE id = ? AND owner_id = ?')
-      .get(messId, ownerId) as Parameters<typeof mapMessRow>[0] | undefined;
+    const existing = (
+      user.role === 'admin'
+        ? db.prepare('SELECT * FROM messes WHERE id = ?').get(messId)
+        : db.prepare('SELECT * FROM messes WHERE id = ? AND owner_id = ?').get(messId, user.userId)
+    ) as Parameters<typeof mapMessRow>[0] | undefined;
 
     if (!existing) {
-      res.status(403).json({ error: 'You can only update your own mess listing.' });
+      res.status(403).json({ error: 'You do not have permission to update this mess listing.' });
       return;
     }
 
+    const name = String(req.body.name || existing.name).trim();
+    const category = String(req.body.category || existing.category).trim().toUpperCase();
     const monthlyPrice = Math.round(Number(req.body.monthlyPrice));
     const halfMonthlyPrice = Math.round(Number(req.body.halfMonthlyPrice || Math.round(monthlyPrice * 0.55)));
     const singlePlatePrice = Math.round(Number(req.body.singlePlatePrice || 70));
@@ -657,6 +577,8 @@ app.put('/api/owner/mess/:id', requireOwner, (req: AuthenticatedRequest, res) =>
 
     db.prepare(
       `UPDATE messes SET
+        name = ?,
+        category = ?,
         monthly_price = ?,
         half_monthly_price = ?,
         single_plate_price = ?,
@@ -673,8 +595,10 @@ app.put('/api/owner/mess/:id', requireOwner, (req: AuthenticatedRequest, res) =>
         tags_json = ?,
         weekly_menu_json = ?,
         updated_at = ?
-       WHERE id = ? AND owner_id = ?`
+       WHERE id = ?`
     ).run(
+      name,
+      category,
       monthlyPrice,
       halfMonthlyPrice,
       singlePlatePrice,
@@ -691,8 +615,7 @@ app.put('/api/owner/mess/:id', requireOwner, (req: AuthenticatedRequest, res) =>
       JSON.stringify(tagsArray),
       JSON.stringify(weeklyMenu),
       nowIso,
-      messId,
-      ownerId
+      messId
     );
 
     const updatedMess = getMessDetailsById(messId);
@@ -710,11 +633,12 @@ app.put('/api/owner/mess/:id', requireOwner, (req: AuthenticatedRequest, res) =>
 app.post('/api/owner/mess/:id/photos', requireOwner, (req: AuthenticatedRequest, res) => {
   try {
     const messId = Number(req.params.id);
-    const ownerId = req.authUser!.userId;
+    const user = req.authUser!;
 
-    const existing = db
-      .prepare('SELECT id FROM messes WHERE id = ? AND owner_id = ?')
-      .get(messId, ownerId);
+    const existing =
+      user.role === 'admin'
+        ? db.prepare('SELECT id FROM messes WHERE id = ?').get(messId)
+        : db.prepare('SELECT id FROM messes WHERE id = ? AND owner_id = ?').get(messId, user.userId);
 
     if (!existing) {
       res.status(403).json({ error: 'You can only upload photographs to your own mess.' });
@@ -760,16 +684,20 @@ app.post('/api/owner/mess/:id/photos', requireOwner, (req: AuthenticatedRequest,
 
 app.delete('/api/owner/photos/:photoId', requireOwner, (req: AuthenticatedRequest, res) => {
   const photoId = Number(req.params.photoId);
-  const ownerId = req.authUser!.userId;
+  const user = req.authUser!;
 
-  const photo = db
-    .prepare(
-      `SELECT p.id, p.mess_id, p.image_data
-       FROM mess_photos p
-       INNER JOIN messes m ON m.id = p.mess_id
-       WHERE p.id = ? AND m.owner_id = ?`
-    )
-    .get(photoId, ownerId) as { id: number; mess_id: number; image_data: string } | undefined;
+  const photo = (
+    user.role === 'admin'
+      ? db.prepare('SELECT id, mess_id, image_data FROM mess_photos WHERE id = ?').get(photoId)
+      : db
+          .prepare(
+            `SELECT p.id, p.mess_id, p.image_data
+             FROM mess_photos p
+             INNER JOIN messes m ON m.id = p.mess_id
+             WHERE p.id = ? AND m.owner_id = ?`
+          )
+          .get(photoId, user.userId)
+  ) as { id: number; mess_id: number; image_data: string } | undefined;
 
   if (!photo) {
     res.status(404).json({ error: 'Photograph not found or unauthorized.' });
@@ -777,8 +705,6 @@ app.delete('/api/owner/photos/:photoId', requireOwner, (req: AuthenticatedReques
   }
 
   db.prepare('DELETE FROM mess_photos WHERE id = ?').run(photoId);
-
-  // If this photo was also set as custom cover, reset cover cleanly
   db.prepare('UPDATE messes SET custom_image_url = NULL WHERE id = ? AND custom_image_url = ?').run(
     photo.mess_id,
     photo.image_data
@@ -791,7 +717,7 @@ app.delete('/api/owner/photos/:photoId', requireOwner, (req: AuthenticatedReques
 app.patch('/api/owner/enquiries/:enquiryId', requireOwner, (req: AuthenticatedRequest, res) => {
   try {
     const enquiryId = Number(req.params.enquiryId);
-    const ownerId = req.authUser!.userId;
+    const user = req.authUser!;
     const status = String(req.body.status || '');
     const ownerNote = String(req.body.ownerNote ?? '').trim().slice(0, 300);
 
@@ -800,26 +726,34 @@ app.patch('/api/owner/enquiries/:enquiryId', requireOwner, (req: AuthenticatedRe
       return;
     }
 
-    const existing = db
-      .prepare(
-        `SELECT e.id, e.mess_id, e.status, m.available_seats
-         FROM enquiries e
-         INNER JOIN messes m ON m.id = e.mess_id
-         WHERE e.id = ? AND m.owner_id = ?`
-      )
-      .get(enquiryId, ownerId) as
-      | { id: number; mess_id: number; status: string; available_seats: number }
-      | undefined;
+    const existing = (
+      user.role === 'admin'
+        ? db
+            .prepare(
+              `SELECT e.id, e.mess_id, e.status, m.available_seats
+               FROM enquiries e
+               INNER JOIN messes m ON m.id = e.mess_id
+               WHERE e.id = ?`
+            )
+            .get(enquiryId)
+        : db
+            .prepare(
+              `SELECT e.id, e.mess_id, e.status, m.available_seats
+               FROM enquiries e
+               INNER JOIN messes m ON m.id = e.mess_id
+               WHERE e.id = ? AND m.owner_id = ?`
+            )
+            .get(enquiryId, user.userId)
+    ) as { id: number; mess_id: number; status: string; available_seats: number } | undefined;
 
     if (!existing) {
-      res.status(404).json({ error: 'Enquiry not found for your mess.' });
+      res.status(404).json({ error: 'Enquiry not found.' });
       return;
     }
 
     const nowIso = new Date().toISOString();
 
     const updateTx = db.transaction(() => {
-      // Automatically reserve/release 1 seat when moving into or out of 'approved'
       if (existing.status !== 'approved' && status === 'approved' && existing.available_seats > 0) {
         db.prepare('UPDATE messes SET available_seats = available_seats - 1, updated_at = ? WHERE id = ?').run(
           nowIso,
@@ -861,6 +795,276 @@ app.patch('/api/owner/enquiries/:enquiryId', requireOwner, (req: AuthenticatedRe
     console.error('Update enquiry error:', err);
     res.status(500).json({ error: 'Failed to update student enquiry.' });
   }
+});
+
+// 7. Administrator Control Panel Routes
+function buildAdminDashboardPayload() {
+  const baseStats = getSummaryStats();
+  const enqCounts = db
+    .prepare(
+      `SELECT
+        COUNT(*) as totalEnquiries,
+        COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) as pendingEnquiries
+       FROM enquiries`
+    )
+    .get() as { totalEnquiries: number; pendingEnquiries: number };
+
+  const revCount = db.prepare('SELECT COUNT(*) as totalReviews FROM reviews').get() as {
+    totalReviews: number;
+  };
+  const ownerCount = db
+    .prepare("SELECT COUNT(*) as totalOwners FROM users WHERE role = 'owner'")
+    .get() as { totalOwners: number };
+
+  const messRows = db.prepare('SELECT * FROM messes ORDER BY id ASC').all() as Parameters<
+    typeof mapMessRow
+  >[0][];
+
+  const enquiryRows = db
+    .prepare(
+      `SELECT e.*, m.name as mess_name, m.location as mess_location
+       FROM enquiries e
+       INNER JOIN messes m ON m.id = e.mess_id
+       ORDER BY e.id DESC`
+    )
+    .all() as Parameters<typeof mapEnquiryRow>[0][];
+
+  const reviewRows = db
+    .prepare(
+      `SELECT r.*, m.name as mess_name
+       FROM reviews r
+       INNER JOIN messes m ON m.id = r.mess_id
+       ORDER BY r.id DESC`
+    )
+    .all() as {
+    id: number;
+    mess_id: number;
+    mess_name: string;
+    student_id: number | null;
+    student_name: string;
+    rating: number;
+    food_quality_rating: number;
+    hygiene_rating: number;
+    comment: string;
+    created_at: string;
+  }[];
+
+  const ownerRows = db
+    .prepare(
+      "SELECT id, name, email, phone, role, college_or_mess, created_at FROM users WHERE role = 'owner' ORDER BY id ASC"
+    )
+    .all() as Parameters<typeof mapUserProfile>[0][];
+
+  return {
+    stats: {
+      ...baseStats,
+      totalEnquiries: enqCounts.totalEnquiries,
+      pendingEnquiries: enqCounts.pendingEnquiries,
+      totalReviews: revCount.totalReviews,
+      totalOwners: ownerCount.totalOwners,
+    },
+    messes: messRows.map(mapMessRow),
+    enquiries: enquiryRows.map(mapEnquiryRow),
+    reviews: reviewRows.map((r) => ({
+      id: r.id,
+      messId: r.mess_id,
+      messName: r.mess_name,
+      studentId: r.student_id,
+      studentName: r.student_name,
+      rating: r.rating,
+      foodQualityRating: r.food_quality_rating,
+      hygieneRating: r.hygiene_rating,
+      comment: r.comment,
+      createdAt: r.created_at,
+    })),
+    owners: ownerRows.map(mapUserProfile),
+  };
+}
+
+app.get('/api/admin/dashboard', requireAdmin, (_req, res) => {
+  try {
+    res.json(buildAdminDashboardPayload());
+  } catch (err) {
+    console.error('Admin dashboard error:', err);
+    res.status(500).json({ error: 'Failed to load Admin Dashboard data.' });
+  }
+});
+
+app.post('/api/admin/messes', requireAdmin, (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    const ownerName = String(req.body.ownerName || '').trim();
+    const ownerEmail = String(req.body.ownerEmail || '').trim().toLowerCase();
+    const contactPhone = String(req.body.contactPhone || '').trim();
+    const category = String(req.body.category || 'FEATURED').trim().toUpperCase();
+    const monthlyPrice = Math.round(Number(req.body.monthlyPrice || 2600));
+    const availableSeats = Math.round(Number(req.body.availableSeats || 20));
+    const totalSeats = Math.round(Number(req.body.totalSeats || 50));
+    const location = String(req.body.location || '').trim();
+    const speciality = String(req.body.speciality || '').trim();
+    const dietType = req.body.dietType === 'Veg & Non-Veg' ? 'Veg & Non-Veg' : 'Pure Veg';
+    const tiffinDelivery = Boolean(req.body.tiffinDelivery);
+    const lunchTiming = String(req.body.lunchTiming || '12:30 PM – 2:45 PM').trim();
+    const dinnerTiming = String(req.body.dinnerTiming || '7:30 PM – 9:30 PM').trim();
+    const buttonColor: ButtonColorVariant =
+      req.body.buttonColor === 'blue' || req.body.buttonColor === 'green'
+        ? req.body.buttonColor
+        : 'orange';
+    const imageKey = String(req.body.imageKey || 'pithla_bhakri');
+
+    if (name.length < 3 || ownerName.length < 2 || !location || !speciality) {
+      res.status(400).json({ error: 'Please fill in Mess Name, Owner Name, Location, and Speciality.' });
+      return;
+    }
+    if (!EMAIL_REGEX.test(ownerEmail)) {
+      res.status(400).json({ error: 'Please provide a valid Owner Email for owner login.' });
+      return;
+    }
+
+    const existingEmail = db.prepare('SELECT id FROM users WHERE email = ?').get(ownerEmail);
+    if (existingEmail) {
+      res.status(409).json({ error: 'An owner with this email already exists.' });
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const createTx = db.transaction(() => {
+      const ownerRes = db
+        .prepare(
+          `INSERT INTO users (name, email, phone, password_hash, role, college_or_mess, created_at)
+           VALUES (?, ?, ?, ?, 'owner', ?, ?)`
+        )
+        .run(
+          ownerName,
+          ownerEmail,
+          contactPhone || '9823000000',
+          hashPassword('Owner@123'),
+          name,
+          nowIso
+        );
+
+      const ownerId = Number(ownerRes.lastInsertRowid);
+      const slug = `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${ownerId}`;
+
+      db.prepare(
+        `INSERT INTO messes (
+          slug, owner_id, owner_name, name, category, monthly_price, half_monthly_price,
+          single_plate_price, rating, review_count, available_seats, total_seats,
+          location, area, diet_type, tiffin_delivery, speciality, tags_json,
+          weekly_menu_json, lunch_timing, dinner_timing, button_color, image_key,
+          custom_image_url, contact_phone, description, hygiene_highlights_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        slug,
+        ownerId,
+        ownerName,
+        name,
+        category,
+        monthlyPrice,
+        Math.round(monthlyPrice * 0.55),
+        70,
+        4.2,
+        1,
+        availableSeats,
+        Math.max(availableSeats, totalSeats),
+        location,
+        'Kasba Bawda',
+        dietType,
+        tiffinDelivery ? 1 : 0,
+        speciality,
+        JSON.stringify(['Maharashtrian', dietType, 'Verified']),
+        JSON.stringify(createDefaultMenu()),
+        lunchTiming,
+        dinnerTiming,
+        buttonColor,
+        imageKey,
+        null,
+        contactPhone || '9823000000',
+        `${name} offers homestyle Maharashtrian meals near ${location}.`,
+        JSON.stringify(['RO Filtered Water', 'Hygienic Kitchen', 'Student Friendly']),
+        nowIso
+      );
+    });
+
+    createTx();
+    res.status(201).json({
+      ...buildAdminDashboardPayload(),
+      message: `${name} added! Owner login created (${ownerEmail} / Owner@123).`,
+    });
+  } catch (err) {
+    console.error('Admin create mess error:', err);
+    res.status(500).json({ error: 'Could not create new mess listing.' });
+  }
+});
+
+app.delete('/api/admin/messes/:id', requireAdmin, (req, res) => {
+  const messId = Number(req.params.id);
+  const existing = db.prepare('SELECT id, owner_id, name FROM messes WHERE id = ?').get(messId) as
+    | { id: number; owner_id: number; name: string }
+    | undefined;
+
+  if (!existing) {
+    res.status(404).json({ error: 'Mess listing not found.' });
+    return;
+  }
+
+  const delTx = db.transaction(() => {
+    db.prepare('DELETE FROM messes WHERE id = ?').run(messId);
+    db.prepare("DELETE FROM users WHERE id = ? AND role = 'owner'").run(existing.owner_id);
+  });
+  delTx();
+
+  res.json({
+    ...buildAdminDashboardPayload(),
+    message: `Removed ${existing.name} from the platform.`,
+  });
+});
+
+app.delete('/api/admin/enquiries/:id', requireAdmin, (req, res) => {
+  const enquiryId = Number(req.params.id);
+  db.prepare('DELETE FROM enquiries WHERE id = ?').run(enquiryId);
+  res.json({
+    ...buildAdminDashboardPayload(),
+    message: 'Enquiry deleted.',
+  });
+});
+
+app.delete('/api/admin/reviews/:id', requireAdmin, (req, res) => {
+  const reviewId = Number(req.params.id);
+  const rev = db
+    .prepare('SELECT id, mess_id, rating FROM reviews WHERE id = ?')
+    .get(reviewId) as { id: number; mess_id: number; rating: number } | undefined;
+
+  if (!rev) {
+    res.status(404).json({ error: 'Review not found.' });
+    return;
+  }
+
+  const delRevTx = db.transaction(() => {
+    db.prepare('DELETE FROM reviews WHERE id = ?').run(reviewId);
+    const currentMess = db
+      .prepare('SELECT rating, review_count FROM messes WHERE id = ?')
+      .get(rev.mess_id) as { rating: number; review_count: number } | undefined;
+
+    if (currentMess && currentMess.review_count > 1) {
+      const nextCount = currentMess.review_count - 1;
+      const nextAvg = Math.min(
+        5,
+        Math.max(1, Number(((currentMess.rating * currentMess.review_count - rev.rating) / nextCount).toFixed(1)))
+      );
+      db.prepare('UPDATE messes SET rating = ?, review_count = ? WHERE id = ?').run(
+        nextAvg,
+        nextCount,
+        rev.mess_id
+      );
+    }
+  });
+  delRevTx();
+
+  res.json({
+    ...buildAdminDashboardPayload(),
+    message: 'Review removed and rating recalculated.',
+  });
 });
 
 async function startServer() {

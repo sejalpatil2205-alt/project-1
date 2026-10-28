@@ -10,7 +10,13 @@ import {
   Scale,
   UtensilsCrossed,
 } from 'lucide-react';
-import { api, getStoredToken, setStoredToken } from './lib/api';
+import {
+  api,
+  getLocalSavedMessIds,
+  getStoredToken,
+  setLocalSavedMessIds,
+  setStoredToken,
+} from './lib/api';
 import { Navbar, type ActiveView } from './components/Navbar';
 import { HeroSection } from './components/HeroSection';
 import { MessCard } from './components/MessCard';
@@ -19,6 +25,7 @@ import { CompareModal } from './components/CompareModal';
 import { AuthModal } from './components/AuthModal';
 import { StudentActivityView } from './components/StudentActivityView';
 import { OwnerDashboard } from './components/OwnerDashboard';
+import { AdminDashboard } from './components/AdminDashboard';
 import type { MessListing, MessSummaryStats, UserProfile, UserRole } from './types';
 
 export default function App() {
@@ -41,9 +48,11 @@ export default function App() {
   const [tiffinOnly, setTiffinOnly] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<string>('featured');
 
-  // Auth & User State
+  // Auth State (Admin & Mess Owner Only) + Browser-Saved Student Favourites
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [favouriteMessIds, setFavouriteMessIds] = useState<number[]>([]);
+  const [favouriteMessIds, setFavouriteMessIds] = useState<number[]>(() =>
+    getLocalSavedMessIds()
+  );
   const [authModalRole, setAuthModalRole] = useState<UserRole | null>(null);
 
   // Modals & Compare State
@@ -64,7 +73,6 @@ export default function App() {
     }, 3000);
   }, []);
 
-  // Load initial messes and restore session if token exists
   const fetchAllMesses = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -88,7 +96,6 @@ export default function App() {
         .getCurrentUser()
         .then((res) => {
           setUser(res.user);
-          setFavouriteMessIds(res.favouriteMessIds);
         })
         .catch(() => {
           setStoredToken(null);
@@ -96,7 +103,6 @@ export default function App() {
     }
   }, [fetchAllMesses]);
 
-  // Client-side instant filtering & sorting over up-to-date server listings
   const filteredMesses = useMemo(() => {
     let result = [...allMesses];
 
@@ -182,20 +188,15 @@ export default function App() {
     setSortBy('featured');
   };
 
-  const handleToggleFavourite = async (messId: number) => {
-    if (!user) {
-      setAuthModalRole('student');
-      showToast('Please sign in to save your favourite messes.');
-      return;
-    }
-
-    try {
-      const res = await api.toggleFavourite(messId);
-      setFavouriteMessIds(res.favouriteMessIds);
-      showToast(res.saved ? 'Mess saved to favourites!' : 'Removed from favourites.');
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Could not update favourites.');
-    }
+  // Instant browser-saved favourites without student login
+  const handleToggleFavourite = (messId: number) => {
+    setFavouriteMessIds((prev) => {
+      const exists = prev.includes(messId);
+      const next = exists ? prev.filter((id) => id !== messId) : [...prev, messId];
+      setLocalSavedMessIds(next);
+      showToast(exists ? 'Removed from saved messes.' : 'Saved to your shortlist!');
+      return next;
+    });
   };
 
   const handleToggleCompare = (messId: number) => {
@@ -211,15 +212,15 @@ export default function App() {
     });
   };
 
-  const handleAuthSuccess = (loggedInUser: UserProfile, favIds: number[]) => {
+  const handleAuthSuccess = (loggedInUser: UserProfile) => {
     setUser(loggedInUser);
-    setFavouriteMessIds(favIds);
     setAuthModalRole(null);
-    if (loggedInUser.role === 'owner') {
+    if (loggedInUser.role === 'admin') {
+      setActiveView('admin_dashboard');
+      showToast('Signed in as System Administrator.');
+    } else {
       setActiveView('owner_dashboard');
       showToast(`Welcome ${loggedInUser.name}! Opened Mess Owner Dashboard.`);
-    } else {
-      showToast(`Signed in as ${loggedInUser.name}.`);
     }
     fetchAllMesses();
   };
@@ -227,7 +228,6 @@ export default function App() {
   const handleLogout = () => {
     setStoredToken(null);
     setUser(null);
-    setFavouriteMessIds([]);
     setActiveView('discover');
     showToast('Signed out successfully.');
   };
@@ -273,7 +273,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Active Main Route */}
+      {/* Active View */}
       {activeView === 'discover' && (
         <>
           <HeroSection
@@ -292,7 +292,6 @@ export default function App() {
             ref={listingsSectionRef}
             className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-10 sm:py-14 space-y-8"
           >
-            {/* Section Title + Interactive Filter Toolbar */}
             <div className="space-y-5">
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
                 <div>
@@ -326,7 +325,6 @@ export default function App() {
                     Filters:
                   </span>
 
-                  {/* Diet Segmented Control */}
                   <div className="inline-flex items-center p-1 rounded-xl bg-[#FFF4E3]">
                     {(['all', 'Pure Veg', 'Veg & Non-Veg'] as const).map((option) => (
                       <button
@@ -344,7 +342,6 @@ export default function App() {
                     ))}
                   </div>
 
-                  {/* Budget Filter */}
                   <select
                     aria-label="Filter by monthly budget"
                     value={maxPriceFilter}
@@ -357,7 +354,6 @@ export default function App() {
                     <option value={3000}>Up to ₹3,000 / mo</option>
                   </select>
 
-                  {/* Tiffin Toggle Button */}
                   <button
                     type="button"
                     onClick={() => setTiffinOnly((prev) => !prev)}
@@ -382,7 +378,6 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Sort Dropdown */}
                 <div className="flex items-center gap-2 ml-auto">
                   <label htmlFor="mess-sort" className="text-xs font-bold text-[#6B6860]">
                     Sort by:
@@ -468,9 +463,9 @@ export default function App() {
         </>
       )}
 
-      {activeView === 'student_portal' && user && (
+      {activeView === 'saved_messes' && (
         <StudentActivityView
-          user={user}
+          allMesses={allMesses}
           favouriteMessIds={favouriteMessIds}
           comparedIds={comparedIds}
           onToggleFavourite={handleToggleFavourite}
@@ -485,6 +480,14 @@ export default function App() {
           user={user}
           onBackToDiscover={() => setActiveView('discover')}
           onGlobalMessUpdated={handleMessDataUpdated}
+        />
+      )}
+
+      {activeView === 'admin_dashboard' && user?.role === 'admin' && (
+        <AdminDashboard
+          user={user}
+          onBackToDiscover={() => setActiveView('discover')}
+          onRefreshGlobalMesses={fetchAllMesses}
         />
       )}
 
@@ -521,7 +524,14 @@ export default function App() {
               onClick={() => setAuthModalRole('owner')}
               className="text-[#FFD400] font-semibold hover:underline cursor-pointer"
             >
-              Mess Owner Portal
+              Owner Login
+            </button>
+            <button
+              type="button"
+              onClick={() => setAuthModalRole('admin')}
+              className="text-[#304FFE] font-bold hover:underline cursor-pointer"
+            >
+              Admin Login
             </button>
           </div>
 
@@ -537,10 +547,8 @@ export default function App() {
           messId={selectedMessModal.mess.id}
           initialMess={selectedMessModal.mess}
           initialTab={selectedMessModal.tab}
-          user={user}
           isFavourite={favouriteMessIds.includes(selectedMessModal.mess.id)}
           onToggleFavourite={handleToggleFavourite}
-          onOpenAuth={(role) => setAuthModalRole(role)}
           onClose={() => setSelectedMessModal(null)}
           onMessDataUpdated={handleMessDataUpdated}
         />

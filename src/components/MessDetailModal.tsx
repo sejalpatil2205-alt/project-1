@@ -14,16 +14,14 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { MessImage } from '../assets/MessImage';
-import type { MessListing, MessSummaryStats, UserProfile } from '../types';
+import type { MessListing, MessSummaryStats } from '../types';
 
 interface MessDetailModalProps {
   messId: number;
   initialMess: MessListing;
   initialTab?: 'menu' | 'enquire' | 'reviews';
-  user: UserProfile | null;
   isFavourite: boolean;
   onToggleFavourite: (messId: number) => void;
-  onOpenAuth: (role: 'student' | 'owner') => void;
   onClose: () => void;
   onMessDataUpdated: (updated: MessListing, stats?: MessSummaryStats) => void;
 }
@@ -32,10 +30,8 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
   messId,
   initialMess,
   initialTab = 'menu',
-  user,
   isFavourite,
   onToggleFavourite,
-  onOpenAuth,
   onClose,
   onMessDataUpdated,
 }) => {
@@ -45,9 +41,9 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
 
   // Enquiry Form State
   const defaultJoinDate = new Date(Date.now() + 2 * 86400 * 1000).toISOString().slice(0, 10);
-  const [studentName, setStudentName] = useState(user?.name || '');
-  const [studentEmail, setStudentEmail] = useState(user?.email || '');
-  const [studentPhone, setStudentPhone] = useState(user?.phone || '');
+  const [studentName, setStudentName] = useState('');
+  const [studentEmail, setStudentEmail] = useState('');
+  const [studentPhone, setStudentPhone] = useState('');
   const [planType, setPlanType] = useState('Full Monthly (Lunch + Dinner)');
   const [startDate, setStartDate] = useState(defaultJoinDate);
   const [enquiryMessage, setEnquiryMessage] = useState('');
@@ -55,7 +51,8 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
   const [enquiryError, setEnquiryError] = useState('');
   const [enquirySuccess, setEnquirySuccess] = useState('');
 
-  // Review Form State
+  // Open Student Review Form State (No Login Needed)
+  const [reviewerName, setReviewerName] = useState('');
   const [rating, setRating] = useState(5);
   const [foodQualityRating, setFoodQualityRating] = useState(5);
   const [hygieneRating, setHygieneRating] = useState(5);
@@ -82,14 +79,6 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
       mounted = false;
     };
   }, [messId]);
-
-  useEffect(() => {
-    if (user) {
-      setStudentName((prev) => prev || user.name);
-      setStudentEmail((prev) => prev || user.email);
-      setStudentPhone((prev) => prev || user.phone);
-    }
-  }, [user]);
 
   const currentDayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
 
@@ -119,16 +108,13 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
 
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user) {
-      onOpenAuth('student');
-      return;
-    }
     setReviewError('');
     setReviewSuccess('');
     setReviewSubmitting(true);
 
     try {
       const res = await api.submitReview(mess.id, {
+        studentName: reviewerName,
         rating,
         foodQualityRating,
         hygieneRating,
@@ -136,8 +122,9 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
       });
       setMess(res.mess);
       onMessDataUpdated(res.mess, res.stats);
+      setReviewerName('');
       setReviewComment('');
-      setReviewSuccess('Thank you! Your review has been published.');
+      setReviewSuccess('Thank you! Your student review is now live.');
     } catch (err) {
       setReviewError(err instanceof Error ? err.message : 'Failed to submit review.');
     } finally {
@@ -261,7 +248,6 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
         <div className="p-5 sm:p-7 overflow-y-auto space-y-6 flex-1">
           {activeTab === 'menu' && (
             <>
-              {/* Description & Key Pricing Tiers */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
                 <div className="lg:col-span-2 bg-white p-5 rounded-2xl border border-[#191919]/10 space-y-3">
                   <h3 className="text-base font-extrabold text-[#191919]">About This Mess</h3>
@@ -336,7 +322,6 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
                 </div>
               </div>
 
-              {/* Owner Uploaded Food Photographs (if any) */}
               {mess.photos && mess.photos.length > 0 && (
                 <div className="space-y-3">
                   <h3 className="text-base font-extrabold text-[#191919]">
@@ -365,7 +350,6 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
                 </div>
               )}
 
-              {/* Weekly Menu Table */}
               <div className="bg-white rounded-2xl border border-[#191919]/10 overflow-hidden">
                 <div className="px-5 py-4 border-b border-[#191919]/10 flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -432,8 +416,8 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
                   Send Subscription Enquiry to {mess.name}
                 </h3>
                 <p className="text-sm text-[#6B6860] mt-1">
-                  Submit your meal plan preference and joining date. {mess.ownerName} will confirm
-                  seat availability directly.
+                  No login required — enter your details below and {mess.ownerName} will reach out
+                  to confirm your seat.
                 </p>
               </div>
 
@@ -444,8 +428,8 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
                     <span>{enquirySuccess}</span>
                   </div>
                   <p className="text-sm text-[#191919]/80">
-                    Your enquiry is now visible on the Mess Owner’s dashboard. You can also track
-                    owner responses under <strong>Saved & Enquiries</strong> when signed in.
+                    Your enquiry has been sent directly to the Mess Owner Dashboard and System
+                    Admin Panel.
                   </p>
                   <button
                     type="button"
@@ -576,126 +560,132 @@ export const MessDetailModal: React.FC<MessDetailModalProps> = ({
 
           {activeTab === 'reviews' && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Write a Review Form */}
+              {/* Direct Student Review Form (No Student Login Required) */}
               <div className="lg:col-span-5 bg-white p-5 rounded-2xl border border-[#191919]/10 h-fit space-y-4">
-                <h3 className="text-base font-extrabold text-[#191919]">Rate & Review This Mess</h3>
-                {!user ? (
-                  <div className="p-4 rounded-xl bg-[#FFF4E3] space-y-3">
-                    <p className="text-xs text-[#4A4741] leading-relaxed">
-                      Sign in with your student account to rate food quality, hygiene, and help
-                      fellow students choose good daily meals.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => onOpenAuth('student')}
-                      className="w-full py-2.5 px-4 rounded-xl bg-[#191919] text-[#FFD400] font-bold text-xs cursor-pointer"
-                    >
-                      Sign In as Student to Review
-                    </button>
+                <div>
+                  <h3 className="text-base font-extrabold text-[#191919]">
+                    Rate & Review This Mess
+                  </h3>
+                  <p className="text-xs text-[#6B6860] mt-0.5">
+                    Share your honest meal feedback to help fellow college students
+                  </p>
+                </div>
+
+                <form onSubmit={handleReviewSubmit} className="space-y-3.5">
+                  {reviewError && (
+                    <div className="p-2.5 rounded-lg bg-[#F0442B]/10 text-xs font-bold text-[#F0442B]">
+                      {reviewError}
+                    </div>
+                  )}
+                  {reviewSuccess && (
+                    <div className="p-2.5 rounded-lg bg-[#19B783]/15 text-xs font-bold text-[#0F7A56]">
+                      {reviewSuccess}
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-bold text-[#191919] mb-1">
+                      Your Name & College / Branch *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={reviewerName}
+                      onChange={(e) => setReviewerName(e.target.value)}
+                      placeholder="e.g., Sneha Patil (CSE TY)"
+                      className="w-full px-3 py-2 rounded-xl border border-[#191919]/20 text-sm focus:outline-2 focus:outline-[#19B783]"
+                    />
                   </div>
-                ) : (
-                  <form onSubmit={handleReviewSubmit} className="space-y-3.5">
-                    {reviewError && (
-                      <div className="p-2.5 rounded-lg bg-[#F0442B]/10 text-xs font-bold text-[#F0442B]">
-                        {reviewError}
-                      </div>
-                    )}
-                    {reviewSuccess && (
-                      <div className="p-2.5 rounded-lg bg-[#19B783]/15 text-xs font-bold text-[#0F7A56]">
-                        {reviewSuccess}
-                      </div>
-                    )}
 
-                    <div>
-                      <label className="block text-xs font-bold text-[#191919] mb-1.5">
-                        Overall Rating
-                      </label>
-                      <div className="flex items-center gap-1.5">
-                        {[1, 2, 3, 4, 5].map((starVal) => (
-                          <button
-                            key={starVal}
-                            type="button"
-                            onClick={() => setRating(starVal)}
-                            className="p-1 cursor-pointer"
-                          >
-                            <Star
-                              className={`w-6 h-6 ${
-                                starVal <= rating
-                                  ? 'fill-[#FFD400] text-[#FFD400]'
-                                  : 'text-[#191919]/20'
-                              }`}
-                            />
-                          </button>
-                        ))}
-                        <span className="ml-2 text-xs font-mono font-bold">{rating}/5</span>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs font-bold text-[#191919] mb-1">
-                          Taste & Quality
-                        </label>
-                        <select
-                          value={foodQualityRating}
-                          onChange={(e) => setFoodQualityRating(Number(e.target.value))}
-                          className="w-full px-2.5 py-2 rounded-lg border border-[#191919]/20 text-xs font-semibold bg-white"
+                  <div>
+                    <label className="block text-xs font-bold text-[#191919] mb-1.5">
+                      Overall Rating
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      {[1, 2, 3, 4, 5].map((starVal) => (
+                        <button
+                          key={starVal}
+                          type="button"
+                          onClick={() => setRating(starVal)}
+                          className="p-1 cursor-pointer"
                         >
-                          {[5, 4, 3, 2, 1].map((n) => (
-                            <option key={n} value={n}>
-                              {n} / 5 Stars
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-[#191919] mb-1">
-                          Hygiene & Hall
-                        </label>
-                        <select
-                          value={hygieneRating}
-                          onChange={(e) => setHygieneRating(Number(e.target.value))}
-                          className="w-full px-2.5 py-2 rounded-lg border border-[#191919]/20 text-xs font-semibold bg-white"
-                        >
-                          {[5, 4, 3, 2, 1].map((n) => (
-                            <option key={n} value={n}>
-                              {n} / 5 Stars
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                          <Star
+                            className={`w-6 h-6 ${
+                              starVal <= rating
+                                ? 'fill-[#FFD400] text-[#FFD400]'
+                                : 'text-[#191919]/20'
+                            }`}
+                          />
+                        </button>
+                      ))}
+                      <span className="ml-2 text-xs font-mono font-bold">{rating}/5</span>
                     </div>
+                  </div>
 
+                  <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-bold text-[#191919] mb-1">
-                        Your Honest Review *
+                        Taste & Quality
                       </label>
-                      <textarea
-                        rows={3}
-                        required
-                        minLength={8}
-                        value={reviewComment}
-                        onChange={(e) => setReviewComment(e.target.value)}
-                        placeholder="How are the chapatis/bhakris, rassa taste, and cleanliness?"
-                        className="w-full px-3 py-2 rounded-xl border border-[#191919]/20 text-sm focus:outline-2 focus:outline-[#19B783]"
-                      />
+                      <select
+                        value={foodQualityRating}
+                        onChange={(e) => setFoodQualityRating(Number(e.target.value))}
+                        className="w-full px-2.5 py-2 rounded-lg border border-[#191919]/20 text-xs font-semibold bg-white"
+                      >
+                        {[5, 4, 3, 2, 1].map((n) => (
+                          <option key={n} value={n}>
+                            {n} / 5 Stars
+                          </option>
+                        ))}
+                      </select>
                     </div>
+                    <div>
+                      <label className="block text-xs font-bold text-[#191919] mb-1">
+                        Hygiene & Hall
+                      </label>
+                      <select
+                        value={hygieneRating}
+                        onChange={(e) => setHygieneRating(Number(e.target.value))}
+                        className="w-full px-2.5 py-2 rounded-lg border border-[#191919]/20 text-xs font-semibold bg-white"
+                      >
+                        {[5, 4, 3, 2, 1].map((n) => (
+                          <option key={n} value={n}>
+                            {n} / 5 Stars
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
 
-                    <button
-                      type="submit"
-                      disabled={reviewSubmitting}
-                      className="w-full py-2.5 px-4 rounded-xl bg-[#19B783] hover:bg-[#149a6e] text-[#191919] font-extrabold text-xs sm:text-sm transition-colors cursor-pointer"
-                    >
-                      {reviewSubmitting ? 'Posting Review...' : 'Post Student Review'}
-                    </button>
-                  </form>
-                )}
+                  <div>
+                    <label className="block text-xs font-bold text-[#191919] mb-1">
+                      Your Honest Review *
+                    </label>
+                    <textarea
+                      rows={3}
+                      required
+                      minLength={8}
+                      value={reviewComment}
+                      onChange={(e) => setReviewComment(e.target.value)}
+                      placeholder="How are the chapatis/bhakris, rassa taste, and cleanliness?"
+                      className="w-full px-3 py-2 rounded-xl border border-[#191919]/20 text-sm focus:outline-2 focus:outline-[#19B783]"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={reviewSubmitting}
+                    className="w-full py-2.5 px-4 rounded-xl bg-[#19B783] hover:bg-[#149a6e] text-[#191919] font-extrabold text-xs sm:text-sm transition-colors cursor-pointer"
+                  >
+                    {reviewSubmitting ? 'Posting Review...' : 'Post Student Review'}
+                  </button>
+                </form>
               </div>
 
               {/* Reviews Feed */}
               <div className="lg:col-span-7 space-y-3">
                 <h3 className="text-base font-extrabold text-[#191919]">
-                  Verified Student Feedback
+                  Student Feedback ({mess.reviews?.length || 0})
                 </h3>
                 {loadingDetails ? (
                   <div className="bg-white p-6 rounded-2xl text-sm text-[#6B6860]">

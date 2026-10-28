@@ -24,6 +24,60 @@ db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
 export function initializeDatabase(): void {
+  // Check if an older schema without 'admin' role exists; if so, migrate cleanly
+  const existingUsersTable = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'")
+    .get() as { sql: string } | undefined;
+
+  if (existingUsersTable && !existingUsersTable.sql.includes("'admin'")) {
+    db.pragma('foreign_keys = OFF');
+    const migrateTx = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE users_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          phone TEXT NOT NULL DEFAULT '',
+          password_hash TEXT NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('admin', 'owner')),
+          college_or_mess TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL
+        );
+
+        INSERT INTO users_new (id, name, email, phone, password_hash, role, college_or_mess, created_at)
+        SELECT id, name, email, phone, password_hash, role, college_or_mess, created_at
+        FROM users
+        WHERE role = 'owner';
+
+        DROP TABLE IF EXISTS favourites;
+        DROP TABLE users;
+        ALTER TABLE users_new RENAME TO users;
+
+        CREATE TABLE reviews_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          mess_id INTEGER NOT NULL,
+          student_id INTEGER,
+          student_name TEXT NOT NULL,
+          rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+          food_quality_rating INTEGER NOT NULL CHECK (food_quality_rating >= 1 AND food_quality_rating <= 5),
+          hygiene_rating INTEGER NOT NULL CHECK (hygiene_rating >= 1 AND hygiene_rating <= 5),
+          comment TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (mess_id) REFERENCES messes(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO reviews_new (id, mess_id, student_id, student_name, rating, food_quality_rating, hygiene_rating, comment, created_at)
+        SELECT id, mess_id, NULL, student_name, rating, food_quality_rating, hygiene_rating, comment, created_at
+        FROM reviews;
+
+        DROP TABLE reviews;
+        ALTER TABLE reviews_new RENAME TO reviews;
+      `);
+    });
+    migrateTx();
+    db.pragma('foreign_keys = ON');
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +85,7 @@ export function initializeDatabase(): void {
       email TEXT NOT NULL UNIQUE,
       phone TEXT NOT NULL DEFAULT '',
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('student', 'owner')),
+      role TEXT NOT NULL CHECK (role IN ('admin', 'owner')),
       college_or_mess TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL
     );
@@ -78,15 +132,6 @@ export function initializeDatabase(): void {
       FOREIGN KEY (mess_id) REFERENCES messes(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS favourites (
-      user_id INTEGER NOT NULL,
-      mess_id INTEGER NOT NULL,
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (user_id, mess_id),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (mess_id) REFERENCES messes(id) ON DELETE CASCADE
-    );
-
     CREATE TABLE IF NOT EXISTS enquiries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       mess_id INTEGER NOT NULL,
@@ -107,25 +152,43 @@ export function initializeDatabase(): void {
     CREATE TABLE IF NOT EXISTS reviews (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       mess_id INTEGER NOT NULL,
-      student_id INTEGER NOT NULL,
+      student_id INTEGER,
       student_name TEXT NOT NULL,
       rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
       food_quality_rating INTEGER NOT NULL CHECK (food_quality_rating >= 1 AND food_quality_rating <= 5),
       hygiene_rating INTEGER NOT NULL CHECK (hygiene_rating >= 1 AND hygiene_rating <= 5),
       comment TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      FOREIGN KEY (mess_id) REFERENCES messes(id) ON DELETE CASCADE,
-      FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+      FOREIGN KEY (mess_id) REFERENCES messes(id) ON DELETE CASCADE
     );
   `);
+
+  const nowIso = new Date().toISOString();
+
+  // Always ensure the System Administrator account exists
+  const adminExists = db
+    .prepare("SELECT id FROM users WHERE email = 'admin@messsystem.in'")
+    .get();
+
+  if (!adminExists) {
+    db.prepare(
+      `INSERT INTO users (name, email, phone, password_hash, role, college_or_mess, created_at)
+       VALUES (?, ?, ?, ?, 'admin', ?, ?)`
+    ).run(
+      'System Administrator',
+      'admin@messsystem.in',
+      '9823000001',
+      hashPassword('Admin@123'),
+      'Mess Finding System Admin',
+      nowIso
+    );
+  }
 
   const countRow = db.prepare('SELECT COUNT(*) as count FROM messes').get() as { count: number };
   if (countRow.count > 0) {
     return;
   }
 
-  const nowIso = new Date().toISOString();
-  const studentPasswordHash = hashPassword('Student@123');
   const ownerPasswordHash = hashPassword('Owner@123');
 
   const insertUser = db.prepare(`
@@ -152,28 +215,17 @@ export function initializeDatabase(): void {
   const insertReview = db.prepare(`
     INSERT INTO reviews (
       mess_id, student_id, student_name, rating, food_quality_rating, hygiene_rating, comment, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?)
   `);
 
   const insertEnquiry = db.prepare(`
     INSERT INTO enquiries (
       mess_id, student_id, student_name, student_email, student_phone,
       plan_type, start_date, message, status, owner_note, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const seedTx = db.transaction(() => {
-    const demoStudentRes = insertUser.run(
-      'Arjun Patil',
-      'arjun.patil@student.edu',
-      '9890123456',
-      studentPasswordHash,
-      'student',
-      'D.Y. Patil College of Engineering, Kasba Bawda',
-      nowIso
-    );
-    const demoStudentId = Number(demoStudentRes.lastInsertRowid);
-
     for (const item of INITIAL_MESSES) {
       const ownerRes = insertUser.run(
         item.ownerName,
@@ -223,7 +275,6 @@ export function initializeDatabase(): void {
         const revDate = new Date(Date.now() - rev.daysAgo * 86400 * 1000).toISOString();
         insertReview.run(
           messId,
-          demoStudentId,
           rev.studentName,
           rev.rating,
           rev.foodQualityRating,
@@ -236,7 +287,6 @@ export function initializeDatabase(): void {
       if (item.slug === 'annapurna-mess' || item.slug === 'randive-mess') {
         insertEnquiry.run(
           messId,
-          demoStudentId,
           'Arjun Patil',
           'arjun.patil@student.edu',
           '9890123456',
@@ -250,10 +300,6 @@ export function initializeDatabase(): void {
         );
       }
     }
-
-    // Seed 2 favourites for the demo student
-    db.prepare('INSERT INTO favourites (user_id, mess_id, created_at) VALUES (?, ?, ?)').run(demoStudentId, 1, nowIso);
-    db.prepare('INSERT INTO favourites (user_id, mess_id, created_at) VALUES (?, ?, ?)').run(demoStudentId, 2, nowIso);
   });
 
   seedTx();
@@ -385,7 +431,7 @@ export function getMessDetailsById(messId: number): MessListing | null {
     .all(messId) as {
     id: number;
     mess_id: number;
-    student_id: number;
+    student_id: number | null;
     student_name: string;
     rating: number;
     food_quality_rating: number;
@@ -426,7 +472,7 @@ export function mapUserProfile(row: {
   name: string;
   email: string;
   phone: string;
-  role: 'student' | 'owner';
+  role: 'admin' | 'owner';
   college_or_mess: string;
   created_at: string;
 }): UserProfile {

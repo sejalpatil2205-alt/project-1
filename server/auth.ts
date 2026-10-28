@@ -81,6 +81,9 @@ export function verifyAuthToken(token: string): TokenPayload | null {
     if (!decoded.exp || decoded.exp < Math.floor(Date.now() / 1000)) {
       return null;
     }
+    if (decoded.role !== 'admin' && decoded.role !== 'owner') {
+      return null;
+    }
     return decoded;
   } catch {
     return null;
@@ -115,8 +118,22 @@ export function requireOwner(req: AuthenticatedRequest, res: Response, next: Nex
     res.status(401).json({ error: 'Authentication required. Please sign in as a Mess Owner.' });
     return;
   }
-  if (user.role !== 'owner') {
-    res.status(403).json({ error: 'Access denied. Only registered Mess Owners can perform this action.' });
+  if (user.role !== 'owner' && user.role !== 'admin') {
+    res.status(403).json({ error: 'Access denied. Mess Owner or Admin privileges required.' });
+    return;
+  }
+  req.authUser = user;
+  next();
+}
+
+export function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+  const user = extractOptionalUser(req);
+  if (!user) {
+    res.status(401).json({ error: 'Authentication required. Please sign in as Administrator.' });
+    return;
+  }
+  if (user.role !== 'admin') {
+    res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
     return;
   }
   req.authUser = user;

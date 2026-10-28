@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
-import { X, User, Store, KeyRound } from 'lucide-react';
+import { X, ShieldCheck, Store, KeyRound } from 'lucide-react';
 import { api, setStoredToken } from '../lib/api';
 import type { UserProfile, UserRole } from '../types';
 
 interface AuthModalProps {
   defaultRole: UserRole;
-  onSuccess: (user: UserProfile, favouriteMessIds: number[]) => void;
+  onSuccess: (user: UserProfile) => void;
   onClose: () => void;
 }
 
@@ -14,37 +14,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onSuccess,
   onClose,
 }) => {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
   const [role, setRole] = useState<UserRole>(defaultRole);
+  const [mode, setMode] = useState<'login' | 'register'>('login');
   const [name, setName] = useState('');
   const [email, setEmail] = useState(
-    defaultRole === 'owner' ? 'annapurna@messowner.in' : 'arjun.patil@student.edu'
+    defaultRole === 'admin' ? 'admin@messsystem.in' : 'annapurna@messowner.in'
   );
   const [phone, setPhone] = useState('');
   const [collegeOrMess, setCollegeOrMess] = useState('');
   const [password, setPassword] = useState(
-    defaultRole === 'owner' ? 'Owner@123' : 'Student@123'
+    defaultRole === 'admin' ? 'Admin@123' : 'Owner@123'
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
   const handleRoleSwitch = (nextRole: UserRole) => {
     setRole(nextRole);
+    setMode('login');
     setError('');
-    if (mode === 'login') {
-      if (nextRole === 'owner') {
-        setEmail('annapurna@messowner.in');
-        setPassword('Owner@123');
-      } else {
-        setEmail('arjun.patil@student.edu');
-        setPassword('Student@123');
-      }
+    if (nextRole === 'admin') {
+      setEmail('admin@messsystem.in');
+      setPassword('Admin@123');
+    } else {
+      setEmail('annapurna@messowner.in');
+      setPassword('Owner@123');
     }
   };
 
   const fillDemoAccount = (demoEmail: string, demoPass: string, demoRole: UserRole) => {
-    setMode('login');
     setRole(demoRole);
+    setMode('login');
     setEmail(demoEmail);
     setPassword(demoPass);
     setError('');
@@ -59,18 +58,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       if (mode === 'login') {
         const res = await api.login(email, password);
         setStoredToken(res.token);
-        onSuccess(res.user, res.favouriteMessIds);
+        onSuccess(res.user);
       } else {
-        const res = await api.register({
+        const res = await api.registerOwner({
           name,
           email,
           phone,
           password,
-          role,
           collegeOrMess,
         });
         setStoredToken(res.token);
-        onSuccess(res.user, res.favouriteMessIds);
+        onSuccess(res.user);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed.');
@@ -89,15 +87,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
-        <div className="bg-[#191919] text-[#FFF4E3] px-6 py-4 flex items-center justify-between border-b-2 border-[#FFD400]">
+        <div
+          className={`bg-[#191919] text-[#FFF4E3] px-6 py-4 flex items-center justify-between border-b-2 ${
+            role === 'admin' ? 'border-[#304FFE]' : 'border-[#FFD400]'
+          }`}
+        >
           <div>
             <h2 className="text-lg font-extrabold text-white">
-              {mode === 'login' ? 'Sign In to Mess Finding System' : 'Create Your Account'}
+              {role === 'admin'
+                ? 'Administrator Login'
+                : mode === 'login'
+                ? 'Mess Owner Login'
+                : 'Register Your Mess'}
             </h2>
             <p className="text-xs text-[#FFF4E3]/70">
-              {role === 'owner'
-                ? 'Mess Owner Portal — Manage Menus, Photos & Enquiries'
-                : 'Student Portal — Save Messes, Review & Enquire'}
+              {role === 'admin'
+                ? 'System Admin Portal — Manage All Messes, Enquiries & Reviews'
+                : 'Mess Owner Portal — Update Menus, Photos, Seats & Enquiries'}
             </p>
           </div>
           <button
@@ -111,19 +117,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         </div>
 
         <div className="p-6 space-y-5">
-          {/* Role Switcher */}
+          {/* Role Switcher: Admin vs Mess Owner */}
           <div className="grid grid-cols-2 gap-2 p-1 bg-[#191919]/10 rounded-xl">
             <button
               type="button"
-              onClick={() => handleRoleSwitch('student')}
+              onClick={() => handleRoleSwitch('admin')}
               className={`py-2 px-3 rounded-lg text-xs font-extrabold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
-                role === 'student'
-                  ? 'bg-[#F0442B] text-white shadow-xs'
+                role === 'admin'
+                  ? 'bg-[#304FFE] text-white shadow-xs'
                   : 'text-[#191919]/75 hover:text-[#191919]'
               }`}
             >
-              <User className="w-3.5 h-3.5" />
-              <span>Student</span>
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Admin Login</span>
             </button>
             <button
               type="button"
@@ -139,39 +145,41 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </button>
           </div>
 
-          {/* Login / Register Mode Switch */}
-          <div className="flex items-center gap-4 border-b border-[#191919]/10 pb-2 text-sm">
-            <button
-              type="button"
-              onClick={() => {
-                setMode('login');
-                setError('');
-              }}
-              className={`font-extrabold pb-1 cursor-pointer ${
-                mode === 'login'
-                  ? 'text-[#F0442B] border-b-2 border-[#F0442B]'
-                  : 'text-[#6B6860] hover:text-[#191919]'
-              }`}
-            >
-              Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode('register');
-                setEmail('');
-                setPassword('');
-                setError('');
-              }}
-              className={`font-extrabold pb-1 cursor-pointer ${
-                mode === 'register'
-                  ? 'text-[#F0442B] border-b-2 border-[#F0442B]'
-                  : 'text-[#6B6860] hover:text-[#191919]'
-              }`}
-            >
-              Create Account
-            </button>
-          </div>
+          {/* Owner Mode Switch (Sign In vs Register New Mess) */}
+          {role === 'owner' && (
+            <div className="flex items-center gap-4 border-b border-[#191919]/10 pb-2 text-sm">
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('login');
+                  setError('');
+                }}
+                className={`font-extrabold pb-1 cursor-pointer ${
+                  mode === 'login'
+                    ? 'text-[#F0442B] border-b-2 border-[#F0442B]'
+                    : 'text-[#6B6860] hover:text-[#191919]'
+                }`}
+              >
+                Owner Sign In
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('register');
+                  setEmail('');
+                  setPassword('');
+                  setError('');
+                }}
+                className={`font-extrabold pb-1 cursor-pointer ${
+                  mode === 'register'
+                    ? 'text-[#F0442B] border-b-2 border-[#F0442B]'
+                    : 'text-[#6B6860] hover:text-[#191919]'
+                }`}
+              >
+                Register New Mess
+              </button>
+            </div>
+          )}
 
           {error && (
             <div className="p-3 rounded-xl bg-[#F0442B]/10 border border-[#F0442B]/30 text-xs font-bold text-[#F0442B]">
@@ -180,18 +188,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
 
           <form onSubmit={handleSubmit} className="space-y-3.5">
-            {mode === 'register' && (
+            {role === 'owner' && mode === 'register' && (
               <>
                 <div>
                   <label className="block text-xs font-bold text-[#191919] mb-1">
-                    Full Name *
+                    Owner Full Name *
                   </label>
                   <input
                     type="text"
                     required
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder={role === 'owner' ? 'Shri. Ramesh Kulkarni' : 'Priya Jadhav'}
+                    placeholder="Shri. Ramesh Kulkarni"
                     className="w-full px-3.5 py-2.5 rounded-xl bg-white border border-[#191919]/20 text-sm focus:outline-2 focus:outline-[#F0442B]"
                   />
                 </div>
@@ -212,14 +220,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-[#191919] mb-1">
-                      {role === 'owner' ? 'Mess Name *' : 'College / Hostel *'}
+                      Mess Name *
                     </label>
                     <input
                       type="text"
                       required
                       value={collegeOrMess}
                       onChange={(e) => setCollegeOrMess(e.target.value)}
-                      placeholder={role === 'owner' ? 'Shree Datta Mess' : 'DYPCET Kasba Bawda'}
+                      placeholder="Shree Datta Mess"
                       className="w-full px-3.5 py-2.5 rounded-xl bg-white border border-[#191919]/20 text-sm focus:outline-2 focus:outline-[#F0442B]"
                     />
                   </div>
@@ -234,8 +242,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-white border border-[#191919]/20 text-sm focus:outline-2 focus:outline-[#F0442B]"
+                placeholder={role === 'admin' ? 'admin@messsystem.in' : 'owner@mess.in'}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-white border border-[#191919]/20 text-sm focus:outline-2 focus:outline-[#304FFE]"
               />
             </div>
 
@@ -247,8 +255,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 minLength={6}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Minimum 6 characters"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-white border border-[#191919]/20 text-sm focus:outline-2 focus:outline-[#F0442B]"
+                placeholder="Enter password"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-white border border-[#191919]/20 text-sm focus:outline-2 focus:outline-[#304FFE]"
               />
             </div>
 
@@ -256,18 +264,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               type="submit"
               disabled={submitting}
               className={`w-full py-3 px-5 rounded-xl font-extrabold text-sm transition-colors cursor-pointer ${
-                role === 'owner'
-                  ? 'bg-[#FFD400] hover:bg-[#ffe033] text-[#191919]'
-                  : 'bg-[#F0442B] hover:bg-[#d93820] text-white'
+                role === 'admin'
+                  ? 'bg-[#304FFE] hover:bg-[#233fe0] text-white'
+                  : 'bg-[#FFD400] hover:bg-[#ffe033] text-[#191919]'
               }`}
             >
               {submitting
-                ? 'Please wait...'
+                ? 'Signing In...'
+                : role === 'admin'
+                ? 'Sign In to Admin Panel'
                 : mode === 'login'
-                ? role === 'owner'
-                  ? 'Sign In to Owner Dashboard'
-                  : 'Sign In as Student'
-                : 'Create Account'}
+                ? 'Sign In to Owner Dashboard'
+                : 'Register & Open Owner Dashboard'}
             </button>
           </form>
 
@@ -275,16 +283,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <div className="pt-3 border-t border-[#191919]/10 space-y-2">
             <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#6B6860]">
               <KeyRound className="w-3.5 h-3.5 text-[#304FFE]" />
-              <span>QUICK DEMO ACCOUNTS (CLICK TO AUTO-FILL):</span>
+              <span>QUICK DEMO CREDENTIALS (CLICK TO AUTO-FILL):</span>
             </div>
             <div className="grid grid-cols-3 gap-2">
               <button
                 type="button"
-                onClick={() => fillDemoAccount('arjun.patil@student.edu', 'Student@123', 'student')}
-                className="p-2 rounded-lg bg-white border border-[#191919]/15 hover:border-[#F0442B] text-left cursor-pointer"
+                onClick={() => fillDemoAccount('admin@messsystem.in', 'Admin@123', 'admin')}
+                className="p-2 rounded-lg bg-white border border-[#191919]/15 hover:border-[#304FFE] text-left cursor-pointer"
               >
-                <div className="text-[11px] font-extrabold text-[#191919]">Student Demo</div>
-                <div className="text-[10px] text-[#6B6860] truncate">Arjun Patil</div>
+                <div className="text-[11px] font-extrabold text-[#304FFE]">System Admin</div>
+                <div className="text-[10px] text-[#6B6860] truncate">Full Control</div>
               </button>
               <button
                 type="button"
@@ -297,7 +305,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <button
                 type="button"
                 onClick={() => fillDemoAccount('randive@messowner.in', 'Owner@123', 'owner')}
-                className="p-2 rounded-lg bg-white border border-[#191919]/15 hover:border-[#304FFE] text-left cursor-pointer"
+                className="p-2 rounded-lg bg-white border border-[#191919]/15 hover:border-[#F0442B] text-left cursor-pointer"
               >
                 <div className="text-[11px] font-extrabold text-[#191919]">Randive Mess</div>
                 <div className="text-[10px] text-[#6B6860] truncate">Owner Login</div>

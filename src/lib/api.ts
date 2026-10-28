@@ -1,14 +1,16 @@
 import type {
+  AdminDashboardData,
+  ButtonColorVariant,
   DailyMenu,
   EnquiryStatus,
   MessListing,
   MessSummaryStats,
   StudentEnquiry,
   UserProfile,
-  UserRole,
 } from '../types';
 
 const TOKEN_STORAGE_KEY = 'mfs_auth_token';
+const SAVED_MESS_STORAGE_KEY = 'mfs_saved_mess_ids';
 
 export function getStoredToken(): string | null {
   try {
@@ -26,7 +28,26 @@ export function setStoredToken(token: string | null): void {
       localStorage.removeItem(TOKEN_STORAGE_KEY);
     }
   } catch {
-    // Ignore storage quota errors in restricted frames
+    // Ignore storage errors
+  }
+}
+
+export function getLocalSavedMessIds(): number[] {
+  try {
+    const raw = localStorage.getItem(SAVED_MESS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'number') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function setLocalSavedMessIds(ids: number[]): void {
+  try {
+    localStorage.setItem(SAVED_MESS_STORAGE_KEY, JSON.stringify(ids));
+  } catch {
+    // Ignore storage errors
   }
 }
 
@@ -81,45 +102,27 @@ export const api = {
   },
 
   login(email: string, password: string) {
-    return apiFetch<{ token: string; user: UserProfile; favouriteMessIds: number[] }>(
-      '/api/auth/login',
-      {
-        method: 'POST',
-        body: JSON.stringify({ email, password }),
-      }
-    );
+    return apiFetch<{ token: string; user: UserProfile }>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
   },
 
-  register(payload: {
+  registerOwner(payload: {
     name: string;
     email: string;
     phone: string;
     password: string;
-    role: UserRole;
     collegeOrMess: string;
   }) {
-    return apiFetch<{ token: string; user: UserProfile; favouriteMessIds: number[] }>(
-      '/api/auth/register',
-      {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      }
-    );
+    return apiFetch<{ token: string; user: UserProfile }>('/api/auth/register-owner', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   },
 
   getCurrentUser() {
-    return apiFetch<{ user: UserProfile; favouriteMessIds: number[] }>('/api/auth/me');
-  },
-
-  toggleFavourite(messId: number) {
-    return apiFetch<{ saved: boolean; favouriteMessIds: number[] }>(
-      `/api/messes/${messId}/favourite`,
-      { method: 'POST' }
-    );
-  },
-
-  getFavourites() {
-    return apiFetch<{ messes: MessListing[] }>('/api/favourites');
+    return apiFetch<{ user: UserProfile }>('/api/auth/me');
   },
 
   submitEnquiry(
@@ -142,13 +145,10 @@ export const api = {
     );
   },
 
-  getStudentEnquiries() {
-    return apiFetch<{ enquiries: StudentEnquiry[] }>('/api/student/enquiries');
-  },
-
   submitReview(
     messId: number,
     payload: {
+      studentName: string;
       rating: number;
       foodQualityRating: number;
       hygieneRating: number;
@@ -171,6 +171,8 @@ export const api = {
   updateOwnerMess(
     messId: number,
     payload: {
+      name?: string;
+      category?: string;
       monthlyPrice: number;
       halfMonthlyPrice: number;
       singlePlatePrice: number;
@@ -227,6 +229,56 @@ export const api = {
     }>(`/api/owner/enquiries/${enquiryId}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
+    });
+  },
+
+  // Admin API Methods
+  getAdminDashboard() {
+    return apiFetch<AdminDashboardData>('/api/admin/dashboard');
+  },
+
+  adminCreateMess(payload: {
+    name: string;
+    ownerName: string;
+    ownerEmail: string;
+    contactPhone: string;
+    category: string;
+    monthlyPrice: number;
+    availableSeats: number;
+    totalSeats: number;
+    location: string;
+    speciality: string;
+    dietType: 'Pure Veg' | 'Veg & Non-Veg';
+    tiffinDelivery: boolean;
+    lunchTiming: string;
+    dinnerTiming: string;
+    buttonColor: ButtonColorVariant;
+    imageKey: string;
+  }) {
+    return apiFetch<AdminDashboardData & { message: string }>('/api/admin/messes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  adminDeleteMess(messId: number) {
+    return apiFetch<AdminDashboardData & { message: string }>(`/api/admin/messes/${messId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  adminDeleteEnquiry(enquiryId: number) {
+    return apiFetch<AdminDashboardData & { message: string }>(
+      `/api/admin/enquiries/${enquiryId}`,
+      {
+        method: 'DELETE',
+      }
+    );
+  },
+
+  adminDeleteReview(reviewId: number) {
+    return apiFetch<AdminDashboardData & { message: string }>(`/api/admin/reviews/${reviewId}`, {
+      method: 'DELETE',
     });
   },
 };

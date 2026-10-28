@@ -6,12 +6,12 @@ import {
   Heart,
   Scale,
   LogOut,
-  User,
+  ShieldCheck,
   LayoutDashboard,
 } from 'lucide-react';
-import type { UserProfile } from '../types';
+import type { UserProfile, UserRole } from '../types';
 
-export type ActiveView = 'discover' | 'student_portal' | 'owner_dashboard';
+export type ActiveView = 'discover' | 'saved_messes' | 'owner_dashboard' | 'admin_dashboard';
 
 interface NavbarProps {
   activeView: ActiveView;
@@ -20,7 +20,7 @@ interface NavbarProps {
   favouriteCount: number;
   compareCount: number;
   onOpenCompare: () => void;
-  onOpenAuth: (defaultRole: 'student' | 'owner') => void;
+  onOpenAuth: (defaultRole: UserRole) => void;
   onLogout: () => void;
 }
 
@@ -48,7 +48,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         <button
           type="button"
           onClick={() => handleNav('discover')}
-          className="flex items-center gap-3 text-left group focus-visible:outline-2 focus-visible:outline-[#FFD400] rounded-lg shrink-0"
+          className="flex items-center gap-3 text-left group focus-visible:outline-2 focus-visible:outline-[#FFD400] rounded-lg shrink-0 cursor-pointer"
         >
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#F0442B] via-[#FFD400] to-[#19B783] p-0.5 shadow-sm shrink-0">
             <div className="w-full h-full bg-[#191919] rounded-[10px] flex items-center justify-center">
@@ -66,7 +66,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
 
         {/* Desktop Navigation Links & Actions */}
-        <div className="hidden md:flex items-center gap-3 lg:gap-4">
+        <div className="hidden md:flex items-center gap-2.5 lg:gap-3.5">
           <button
             type="button"
             onClick={() => handleNav('discover')}
@@ -88,75 +88,74 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span>Compare{compareCount > 0 ? ` (${compareCount})` : ''}</span>
           </button>
 
-          {user ? (
-            <>
-              {user.role === 'student' && (
-                <button
-                  type="button"
-                  onClick={() => handleNav('student_portal')}
-                  className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                    activeView === 'student_portal'
-                      ? 'bg-[#19B783] text-[#191919]'
-                      : 'text-[#FFF4E3]/90 hover:text-white hover:bg-white/10'
-                  }`}
-                >
-                  <Heart className="w-4 h-4 text-[#F0442B]" />
-                  <span>Saved & Enquiries{favouriteCount > 0 ? ` (${favouriteCount})` : ''}</span>
-                </button>
-              )}
+          <button
+            type="button"
+            onClick={() => handleNav('saved_messes')}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              activeView === 'saved_messes'
+                ? 'bg-white/15 text-white'
+                : 'text-[#FFF4E3]/90 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            <Heart className="w-4 h-4 text-[#F0442B]" />
+            <span>Saved{favouriteCount > 0 ? ` (${favouriteCount})` : ''}</span>
+          </button>
 
-              {user.role === 'owner' ? (
-                <button
-                  type="button"
-                  onClick={() => handleNav('owner_dashboard')}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-extrabold bg-[#FFD400] text-[#191919] hover:bg-[#ffe033] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  <LayoutDashboard className="w-4 h-4" />
-                  <span>Owner Dashboard</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => onOpenAuth('owner')}
-                  className="px-4 py-2 rounded-lg text-sm font-extrabold bg-[#FFD400] text-[#191919] hover:bg-[#ffe033] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  Owner Login
-                </button>
-              )}
-
-              <div className="flex items-center gap-2 pl-2 border-l border-white/15">
-                <span className="text-xs font-medium text-[#FFF4E3]/80 max-w-[120px] truncate">
-                  {user.name.split(' ')[0]}
-                </span>
-                <button
-                  type="button"
-                  onClick={onLogout}
-                  title="Sign Out"
-                  className="p-2 rounded-lg text-[#FFF4E3]/75 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
-            </>
+          {/* Owner Action */}
+          {user?.role === 'owner' ? (
+            <button
+              type="button"
+              onClick={() => handleNav('owner_dashboard')}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-extrabold bg-[#FFD400] text-[#191919] hover:bg-[#ffe033] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <LayoutDashboard className="w-4 h-4" />
+              <span>Owner Dashboard</span>
+            </button>
           ) : (
-            <>
-              <button
-                type="button"
-                onClick={() => onOpenAuth('student')}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold text-[#FFF4E3]/90 hover:text-white hover:bg-white/10 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                <User className="w-4 h-4 text-[#19B783]" />
-                <span>Student Sign In</span>
-              </button>
+            <button
+              type="button"
+              onClick={() => onOpenAuth('owner')}
+              className="px-4 py-2 rounded-lg text-sm font-extrabold bg-[#FFD400] text-[#191919] hover:bg-[#ffe033] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Owner Login
+            </button>
+          )}
 
+          {/* Admin Action */}
+          {user?.role === 'admin' ? (
+            <button
+              type="button"
+              onClick={() => handleNav('admin_dashboard')}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-extrabold bg-[#304FFE] text-white hover:bg-[#233fe0] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>Admin Panel</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onOpenAuth('admin')}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-bold bg-[#304FFE] text-white hover:bg-[#233fe0] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>Admin Login</span>
+            </button>
+          )}
+
+          {user && (
+            <div className="flex items-center gap-2 pl-2 border-l border-white/15">
+              <span className="text-xs font-medium text-[#FFF4E3]/80 max-w-[110px] truncate">
+                {user.role === 'admin' ? 'Admin' : user.name.split(' ')[0]}
+              </span>
               <button
                 type="button"
-                onClick={() => onOpenAuth('owner')}
-                className="px-4 py-2 rounded-lg text-sm font-extrabold bg-[#FFD400] text-[#191919] hover:bg-[#ffe033] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                onClick={onLogout}
+                title="Sign Out"
+                className="p-2 rounded-lg text-[#FFF4E3]/75 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
               >
-                Owner Login
+                <LogOut className="w-4 h-4" />
               </button>
-            </>
+            </div>
           )}
         </div>
 
@@ -204,63 +203,68 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setMobileMenuOpen(false);
-              onOpenCompare();
-            }}
-            className="w-full flex items-center justify-between py-2.5 px-3.5 rounded-lg text-sm font-semibold text-[#FFF4E3] bg-white/5 hover:bg-white/10"
-          >
-            <span className="flex items-center gap-2">
-              <Scale className="w-4 h-4 text-[#304FFE]" />
-              Compare Messes
-            </span>
-            <span className="text-xs font-mono text-[#FFD400]">{compareCount}/3 selected</span>
-          </button>
-
-          {user ? (
-            <div className="pt-2 border-t border-white/10 space-y-2">
-              {user.role === 'student' && (
-                <button
-                  type="button"
-                  onClick={() => handleNav('student_portal')}
-                  className="w-full flex items-center justify-between py-2.5 px-3.5 rounded-lg text-sm font-semibold text-[#FFF4E3] bg-white/5"
-                >
-                  <span className="flex items-center gap-2">
-                    <Heart className="w-4 h-4 text-[#F0442B]" />
-                    Saved Messes & My Enquiries
-                  </span>
-                  <span className="text-xs font-mono">{favouriteCount} saved</span>
-                </button>
-              )}
-              <div className="flex items-center justify-between px-2 pt-1">
-                <div className="text-xs text-[#FFF4E3]/80">
-                  Signed in as <strong className="text-white">{user.name}</strong>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    onLogout();
-                  }}
-                  className="text-xs font-semibold text-[#F0442B] py-1 px-2"
-                >
-                  Sign Out
-                </button>
-              </div>
-            </div>
+          {user?.role === 'admin' ? (
+            <button
+              type="button"
+              onClick={() => handleNav('admin_dashboard')}
+              className="w-full py-2.5 px-4 rounded-lg text-sm font-extrabold bg-[#304FFE] text-white flex items-center justify-center gap-2"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>Open Admin Panel</span>
+            </button>
           ) : (
             <button
               type="button"
               onClick={() => {
                 setMobileMenuOpen(false);
-                onOpenAuth('student');
+                onOpenAuth('admin');
               }}
-              className="w-full py-2.5 px-3.5 rounded-lg text-sm font-semibold text-[#FFF4E3] bg-white/5 hover:bg-white/10 text-center"
+              className="w-full py-2.5 px-4 rounded-lg text-sm font-bold bg-[#304FFE] text-white flex items-center justify-center gap-2"
             >
-              Student Login / Register
+              <ShieldCheck className="w-4 h-4" />
+              <span>Admin Login</span>
             </button>
+          )}
+
+          <div className="grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                onOpenCompare();
+              }}
+              className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg text-xs font-semibold text-[#FFF4E3] bg-white/5 hover:bg-white/10"
+            >
+              <Scale className="w-4 h-4 text-[#304FFE]" />
+              <span>Compare ({compareCount}/3)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleNav('saved_messes')}
+              className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg text-xs font-semibold text-[#FFF4E3] bg-white/5 hover:bg-white/10"
+            >
+              <Heart className="w-4 h-4 text-[#F0442B]" />
+              <span>Saved ({favouriteCount})</span>
+            </button>
+          </div>
+
+          {user && (
+            <div className="flex items-center justify-between px-2 pt-2 border-t border-white/10">
+              <div className="text-xs text-[#FFF4E3]/80">
+                Signed in as <strong className="text-white">{user.name}</strong> ({user.role})
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onLogout();
+                }}
+                className="text-xs font-semibold text-[#F0442B] py-1 px-2"
+              >
+                Sign Out
+              </button>
+            </div>
           )}
         </div>
       )}

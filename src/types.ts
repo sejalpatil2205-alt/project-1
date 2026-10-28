@@ -1,4 +1,4 @@
-export type UserRole = 'student' | 'owner';
+export type UserRole = 'admin' | 'owner';
 
 export type ButtonColorVariant = 'orange' | 'blue' | 'green';
 
@@ -22,7 +22,8 @@ export interface MessPhoto {
 export interface MessReview {
   id: number;
   messId: number;
-  studentId: number;
+  messName?: string;
+  studentId: number | null;
   studentName: string;
   rating: number;
   foodQualityRating: number;
@@ -98,4 +99,17 @@ export interface MessSummaryStats {
   minMonthlyPrice: number;
   avgRating: number;
   totalAvailableSeats: number;
+}
+
+export interface AdminDashboardData {
+  stats: MessSummaryStats & {
+    totalEnquiries: number;
+    pendingEnquiries: number;
+    totalReviews: number;
+    totalOwners: number;
+  };
+  messes: MessListing[];
+  enquiries: StudentEnquiry[];
+  reviews: MessReview[];
+  owners: UserProfile[];
 }
