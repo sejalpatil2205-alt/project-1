@@ -3,13 +3,26 @@ import express from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
 import {
-  db,
   initializeDatabase,
-  mapMessRow,
+  toPublicUser,
+  findUserByEmail,
+  findUserById,
   getSummaryStats,
+  listAllMesses,
   getMessDetailsById,
-  mapUserProfile,
-  mapEnquiryRow,
+  getMessByOwnerId,
+  registerOwnerWithMess,
+  createStudentEnquiry,
+  addStudentReview,
+  listEnquiriesForMess,
+  updateMessRecord,
+  addMessPhoto,
+  removeMessPhoto,
+  updateEnquiryRecord,
+  getAdminDashboardSnapshot,
+  deleteMessById,
+  deleteEnquiryById,
+  deleteReviewById,
 } from './server/db.ts';
 import {
   hashPassword,
@@ -20,7 +33,7 @@ import {
   requireAdmin,
 } from './server/auth.ts';
 import type { AuthenticatedRequest } from './server/auth.ts';
-import type { ButtonColorVariant, DailyMenu } from './src/types.ts';
+import type { ButtonColorVariant, DailyMenu, EnquiryStatus } from './src/types.ts';
 
 initializeDatabase();
 
@@ -32,28 +45,17 @@ app.use(express.json({ limit: '4mb' }));
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_REGEX = /^[0-9+\-\s()]{8,15}$/;
 
-function createDefaultMenu(): DailyMenu[] {
-  return [
-    { day: 'Monday', lunch: '3 Chapati, Matki Usal, Varan Bhat, Salad', dinner: '2 Bhakri, Pithla, Steamed Rice, Thecha' },
-    { day: 'Tuesday', lunch: '3 Chapati, Bharli Vangi, Amti, Rice', dinner: '3 Chapati, Dal Tadka, Jeera Rice' },
-    { day: 'Wednesday', lunch: '3 Chapati, Veg Kolhapuri, Varan Bhat, Taak', dinner: '3 Chapati, Aloo Gobi, Dal Fry, Rice' },
-    { day: 'Thursday', lunch: '3 Chapati, Chavali Usal, Kadhi, Rice', dinner: '2 Bhakri, Zunka, Steamed Rice' },
-    { day: 'Friday', lunch: '3 Chapati, Shev Bhaji, Amti, Indrayani Rice', dinner: '3 Chapati, Akkha Masoor, Jeera Rice' },
-    { day: 'Saturday', lunch: '3 Chapati, Kala Chana Rassa, Varan Bhat', dinner: 'Dal Khichdi, Papad, Koshimbir' },
-    { day: 'Sunday', lunch: 'Sunday Feast: Masale Bhat, Chapati, Kurma, Gulab Jamun', dinner: 'Sunday Evening Closed', special: 'Gulab Jamun' },
-  ];
-}
-
 // 1. Health Check for Cloud Run
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
     service: 'mess-finding-system',
+    environment: process.env.K_SERVICE ? 'cloud-run' : 'local',
     timestamp: new Date().toISOString(),
   });
 });
 
-// 2. Authentication Routes (Admin & Mess Owner Only — No Student Login Required)
+// 2. Authentication Routes (Admin & Mess Owner)
 app.post('/api/auth/register-owner', (req, res) => {
   try {
     const name = String(req.body.name || '').trim();
@@ -83,91 +85,29 @@ app.post('/api/auth/register-owner', (req, res) => {
       return;
     }
 
-    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-    if (existing) {
+    if (findUserByEmail(email)) {
       res.status(409).json({ error: 'An account with this email already exists. Please sign in.' });
       return;
     }
 
-    const nowIso = new Date().toISOString();
-    const passwordHash = hashPassword(password);
-
-    const registerTx = db.transaction(() => {
-      const result = db
-        .prepare(
-          `INSERT INTO users (name, email, phone, password_hash, role, college_or_mess, created_at)
-           VALUES (?, ?, ?, ?, 'owner', ?, ?)`
-        )
-        .run(name, email, phone, passwordHash, messName, nowIso);
-
-      const userId = Number(result.lastInsertRowid);
-      const slug = `${messName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${userId}`;
-
-      db.prepare(
-        `INSERT INTO messes (
-          slug, owner_id, owner_name, name, category, monthly_price, half_monthly_price,
-          single_plate_price, rating, review_count, available_seats, total_seats,
-          location, area, diet_type, tiffin_delivery, speciality, tags_json,
-          weekly_menu_json, lunch_timing, dinner_timing, button_color, image_key,
-          custom_image_url, contact_phone, description, hygiene_highlights_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        slug,
-        userId,
-        name,
-        messName,
-        'NEW LISTING',
-        2600,
-        1450,
-        70,
-        4.2,
-        1,
-        20,
-        45,
-        'Near College Road, Kasba Bawda, Kolhapur',
-        'Kasba Bawda',
-        'Pure Veg',
-        1,
-        'Chapati, Bhakri, Varan Bhat, Homestyle Bhaji',
-        JSON.stringify(['Homestyle', 'Pure Veg', 'Maharashtrian']),
-        JSON.stringify(createDefaultMenu()),
-        '12:30 PM – 2:45 PM',
-        '7:30 PM – 9:30 PM',
-        'orange',
-        'pithla_bhakri',
-        null,
-        phone,
-        'Freshly registered homestyle Maharashtrian student mess near campus.',
-        JSON.stringify(['RO Drinking Water', 'Fresh Daily Cooking', 'Clean Dining Space']),
-        nowIso
-      );
-
-      return userId;
+    const createdUser = registerOwnerWithMess({
+      name,
+      email,
+      phone,
+      passwordHash: hashPassword(password),
+      messName,
     });
 
-    const newUserId = registerTx();
-    const userRow = db
-      .prepare('SELECT id, name, email, phone, role, college_or_mess, created_at FROM users WHERE id = ?')
-      .get(newUserId) as {
-      id: number;
-      name: string;
-      email: string;
-      phone: string;
-      role: 'admin' | 'owner';
-      college_or_mess: string;
-      created_at: string;
-    };
-
     const token = signAuthToken({
-      userId: userRow.id,
-      email: userRow.email,
-      role: userRow.role,
-      name: userRow.name,
+      userId: createdUser.id,
+      email: createdUser.email,
+      role: createdUser.role,
+      name: createdUser.name,
     });
 
     res.status(201).json({
       token,
-      user: mapUserProfile(userRow),
+      user: toPublicUser(createdUser),
     });
   } catch (err) {
     console.error('Register owner error:', err);
@@ -185,22 +125,8 @@ app.post('/api/auth/login', (req, res) => {
       return;
     }
 
-    const userRow = db
-      .prepare('SELECT id, name, email, phone, password_hash, role, college_or_mess, created_at FROM users WHERE email = ?')
-      .get(email) as
-      | {
-          id: number;
-          name: string;
-          email: string;
-          phone: string;
-          password_hash: string;
-          role: 'admin' | 'owner';
-          college_or_mess: string;
-          created_at: string;
-        }
-      | undefined;
-
-    if (!userRow || !verifyPassword(password, userRow.password_hash)) {
+    const userRow = findUserByEmail(email);
+    if (!userRow || !verifyPassword(password, userRow.passwordHash)) {
       res.status(401).json({ error: 'Invalid email or password. Please check your credentials.' });
       return;
     }
@@ -214,7 +140,7 @@ app.post('/api/auth/login', (req, res) => {
 
     res.json({
       token,
-      user: mapUserProfile(userRow),
+      user: toPublicUser(userRow),
     });
   } catch (err) {
     console.error('Login error:', err);
@@ -223,28 +149,14 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res) => {
-  const userId = req.authUser!.userId;
-  const userRow = db
-    .prepare('SELECT id, name, email, phone, role, college_or_mess, created_at FROM users WHERE id = ?')
-    .get(userId) as
-    | {
-        id: number;
-        name: string;
-        email: string;
-        phone: string;
-        role: 'admin' | 'owner';
-        college_or_mess: string;
-        created_at: string;
-      }
-    | undefined;
-
+  const userRow = findUserById(req.authUser!.userId);
   if (!userRow) {
     res.status(404).json({ error: 'User profile not found.' });
     return;
   }
 
   res.json({
-    user: mapUserProfile(userRow),
+    user: toPublicUser(userRow),
   });
 });
 
@@ -258,8 +170,7 @@ app.get('/api/messes', (req, res) => {
     const tiffinOnly = req.query.tiffin === 'true';
     const sortBy = String(req.query.sort || 'featured');
 
-    const rows = db.prepare('SELECT * FROM messes ORDER BY id ASC').all() as Parameters<typeof mapMessRow>[0][];
-    let messes = rows.map(mapMessRow);
+    let messes = listAllMesses();
 
     if (q) {
       messes = messes.filter((m) => {
@@ -330,19 +241,10 @@ app.get('/api/messes/:id', (req, res) => {
   res.json({ mess: details });
 });
 
-// 4. Open Student Subscription Enquiries (No Student Login Needed)
+// 4. Open Student Subscription Enquiries
 app.post('/api/messes/:id/enquiries', (req, res) => {
   try {
     const messId = Number(req.params.id);
-    const mess = db.prepare('SELECT id, name, available_seats FROM messes WHERE id = ?').get(messId) as
-      | { id: number; name: string; available_seats: number }
-      | undefined;
-
-    if (!mess) {
-      res.status(404).json({ error: 'Mess listing not found.' });
-      return;
-    }
-
     const studentName = String(req.body.studentName || '').trim();
     const studentEmail = String(req.body.studentEmail || '').trim().toLowerCase();
     const studentPhone = String(req.body.studentPhone || '').trim();
@@ -367,38 +269,24 @@ app.post('/api/messes/:id/enquiries', (req, res) => {
       return;
     }
 
-    const nowIso = new Date().toISOString();
-    const result = db
-      .prepare(
-        `INSERT INTO enquiries (
-          mess_id, student_id, student_name, student_email, student_phone,
-          plan_type, start_date, message, status, owner_note, created_at, updated_at
-        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)`
-      )
-      .run(
-        messId,
-        studentName,
-        studentEmail,
-        studentPhone,
-        planType,
-        startDate,
-        message || 'Interested in subscribing to monthly meals.',
-        nowIso,
-        nowIso
-      );
+    const created = createStudentEnquiry({
+      messId,
+      studentName,
+      studentEmail,
+      studentPhone,
+      planType,
+      startDate,
+      message: message || 'Interested in subscribing to monthly meals.',
+    });
 
-    const createdRow = db
-      .prepare(
-        `SELECT e.*, m.name as mess_name, m.location as mess_location
-         FROM enquiries e
-         INNER JOIN messes m ON m.id = e.mess_id
-         WHERE e.id = ?`
-      )
-      .get(Number(result.lastInsertRowid)) as Parameters<typeof mapEnquiryRow>[0];
+    if (!created) {
+      res.status(404).json({ error: 'Mess listing not found.' });
+      return;
+    }
 
     res.status(201).json({
-      enquiry: mapEnquiryRow(createdRow),
-      message: `Subscription enquiry sent to ${mess.name}!`,
+      enquiry: created,
+      message: `Subscription enquiry sent to ${created.messName}!`,
     });
   } catch (err) {
     console.error('Enquiry submission error:', err);
@@ -406,16 +294,10 @@ app.post('/api/messes/:id/enquiries', (req, res) => {
   }
 });
 
-// 5. Open Student Ratings & Reviews (No Student Login Needed)
+// 5. Open Student Ratings & Reviews
 app.post('/api/messes/:id/reviews', (req, res) => {
   try {
     const messId = Number(req.params.id);
-    const messExists = db.prepare('SELECT id FROM messes WHERE id = ?').get(messId);
-    if (!messExists) {
-      res.status(404).json({ error: 'Mess listing not found.' });
-      return;
-    }
-
     const studentName = String(req.body.studentName || '').trim();
     const rating = Math.round(Number(req.body.rating));
     const foodQualityRating = Math.round(Number(req.body.foodQualityRating || rating));
@@ -435,43 +317,20 @@ app.post('/api/messes/:id/reviews', (req, res) => {
       return;
     }
 
-    const nowIso = new Date().toISOString();
-
-    const reviewTx = db.transaction(() => {
-      db.prepare(
-        `INSERT INTO reviews (
-          mess_id, student_id, student_name, rating, food_quality_rating, hygiene_rating, comment, created_at
-        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        messId,
-        studentName,
-        rating,
-        Math.min(5, Math.max(1, foodQualityRating)),
-        Math.min(5, Math.max(1, hygieneRating)),
-        comment,
-        nowIso
-      );
-
-      const currentMess = db
-        .prepare('SELECT rating, review_count FROM messes WHERE id = ?')
-        .get(messId) as { rating: number; review_count: number };
-
-      const newCount = currentMess.review_count + 1;
-      const updatedAvg = Number(
-        ((currentMess.rating * currentMess.review_count + rating) / newCount).toFixed(1)
-      );
-
-      db.prepare('UPDATE messes SET rating = ?, review_count = ?, updated_at = ? WHERE id = ?').run(
-        updatedAvg,
-        newCount,
-        nowIso,
-        messId
-      );
+    const updatedMess = addStudentReview({
+      messId,
+      studentName,
+      rating,
+      foodQualityRating: Math.min(5, Math.max(1, foodQualityRating)),
+      hygieneRating: Math.min(5, Math.max(1, hygieneRating)),
+      comment,
     });
 
-    reviewTx();
+    if (!updatedMess) {
+      res.status(404).json({ error: 'Mess listing not found.' });
+      return;
+    }
 
-    const updatedMess = getMessDetailsById(messId);
     res.status(201).json({
       mess: updatedMess,
       stats: getSummaryStats(),
@@ -484,30 +343,15 @@ app.post('/api/messes/:id/reviews', (req, res) => {
 
 // 6. Mess Owner Dashboard & Listing Management Routes
 app.get('/api/owner/dashboard', requireOwner, (req: AuthenticatedRequest, res) => {
-  const ownerId = req.authUser!.userId;
-  const messRow = db.prepare('SELECT * FROM messes WHERE owner_id = ? LIMIT 1').get(ownerId) as
-    | Parameters<typeof mapMessRow>[0]
-    | undefined;
-
-  if (!messRow) {
+  const mess = getMessByOwnerId(req.authUser!.userId);
+  if (!mess) {
     res.status(404).json({ error: 'No mess listing is linked to this owner account.' });
     return;
   }
 
-  const fullMess = getMessDetailsById(messRow.id);
-  const enquiryRows = db
-    .prepare(
-      `SELECT e.*, m.name as mess_name, m.location as mess_location
-       FROM enquiries e
-       INNER JOIN messes m ON m.id = e.mess_id
-       WHERE e.mess_id = ?
-       ORDER BY e.id DESC`
-    )
-    .all(messRow.id) as Parameters<typeof mapEnquiryRow>[0][];
-
   res.json({
-    mess: fullMess,
-    enquiries: enquiryRows.map(mapEnquiryRow),
+    mess,
+    enquiries: listEnquiriesForMess(mess.id),
   });
 });
 
@@ -515,14 +359,9 @@ app.put('/api/owner/mess/:id', requireOwner, (req: AuthenticatedRequest, res) =>
   try {
     const messId = Number(req.params.id);
     const user = req.authUser!;
+    const existing = getMessDetailsById(messId);
 
-    const existing = (
-      user.role === 'admin'
-        ? db.prepare('SELECT * FROM messes WHERE id = ?').get(messId)
-        : db.prepare('SELECT * FROM messes WHERE id = ? AND owner_id = ?').get(messId, user.userId)
-    ) as Parameters<typeof mapMessRow>[0] | undefined;
-
-    if (!existing) {
+    if (!existing || (user.role !== 'admin' && existing.ownerId !== user.userId)) {
       res.status(403).json({ error: 'You do not have permission to update this mess listing.' });
       return;
     }
@@ -533,13 +372,13 @@ app.put('/api/owner/mess/:id', requireOwner, (req: AuthenticatedRequest, res) =>
     const halfMonthlyPrice = Math.round(Number(req.body.halfMonthlyPrice || Math.round(monthlyPrice * 0.55)));
     const singlePlatePrice = Math.round(Number(req.body.singlePlatePrice || 70));
     const availableSeats = Math.round(Number(req.body.availableSeats));
-    const totalSeats = Math.round(Number(req.body.totalSeats || existing.total_seats));
-    const lunchTiming = String(req.body.lunchTiming || existing.lunch_timing).trim();
-    const dinnerTiming = String(req.body.dinnerTiming || existing.dinner_timing).trim();
+    const totalSeats = Math.round(Number(req.body.totalSeats || existing.totalSeats));
+    const lunchTiming = String(req.body.lunchTiming || existing.lunchTiming).trim();
+    const dinnerTiming = String(req.body.dinnerTiming || existing.dinnerTiming).trim();
     const speciality = String(req.body.speciality || existing.speciality).trim();
     const location = String(req.body.location || existing.location).trim();
     const description = String(req.body.description || existing.description).trim();
-    const contactPhone = String(req.body.contactPhone || existing.contact_phone).trim();
+    const contactPhone = String(req.body.contactPhone || existing.contactPhone).trim();
     const dietType = req.body.dietType === 'Veg & Non-Veg' ? 'Veg & Non-Veg' : 'Pure Veg';
     const tiffinDelivery = Boolean(req.body.tiffinDelivery);
 
@@ -560,9 +399,9 @@ app.put('/api/owner/mess/:id', requireOwner, (req: AuthenticatedRequest, res) =>
       return;
     }
 
-    const tagsArray = Array.isArray(req.body.tags)
+    const tags = Array.isArray(req.body.tags)
       ? req.body.tags.map((t: unknown) => String(t).trim()).filter(Boolean).slice(0, 8)
-      : JSON.parse(existing.tags_json);
+      : existing.tags;
 
     const weeklyMenu: DailyMenu[] = Array.isArray(req.body.weeklyMenu)
       ? req.body.weeklyMenu.map((d: DailyMenu) => ({
@@ -571,32 +410,9 @@ app.put('/api/owner/mess/:id', requireOwner, (req: AuthenticatedRequest, res) =>
           dinner: String(d.dinner || '').trim(),
           ...(d.special ? { special: String(d.special).trim() } : {}),
         }))
-      : JSON.parse(existing.weekly_menu_json);
+      : existing.weeklyMenu;
 
-    const nowIso = new Date().toISOString();
-
-    db.prepare(
-      `UPDATE messes SET
-        name = ?,
-        category = ?,
-        monthly_price = ?,
-        half_monthly_price = ?,
-        single_plate_price = ?,
-        available_seats = ?,
-        total_seats = ?,
-        lunch_timing = ?,
-        dinner_timing = ?,
-        speciality = ?,
-        location = ?,
-        description = ?,
-        contact_phone = ?,
-        diet_type = ?,
-        tiffin_delivery = ?,
-        tags_json = ?,
-        weekly_menu_json = ?,
-        updated_at = ?
-       WHERE id = ?`
-    ).run(
+    const updatedMess = updateMessRecord(messId, {
       name,
       category,
       monthlyPrice,
@@ -611,14 +427,11 @@ app.put('/api/owner/mess/:id', requireOwner, (req: AuthenticatedRequest, res) =>
       description,
       contactPhone,
       dietType,
-      tiffinDelivery ? 1 : 0,
-      JSON.stringify(tagsArray),
-      JSON.stringify(weeklyMenu),
-      nowIso,
-      messId
-    );
+      tiffinDelivery,
+      tags,
+      weeklyMenu,
+    });
 
-    const updatedMess = getMessDetailsById(messId);
     res.json({
       mess: updatedMess,
       stats: getSummaryStats(),
@@ -634,13 +447,9 @@ app.post('/api/owner/mess/:id/photos', requireOwner, (req: AuthenticatedRequest,
   try {
     const messId = Number(req.params.id);
     const user = req.authUser!;
+    const existing = getMessDetailsById(messId);
 
-    const existing =
-      user.role === 'admin'
-        ? db.prepare('SELECT id FROM messes WHERE id = ?').get(messId)
-        : db.prepare('SELECT id FROM messes WHERE id = ? AND owner_id = ?').get(messId, user.userId);
-
-    if (!existing) {
+    if (!existing || (user.role !== 'admin' && existing.ownerId !== user.userId)) {
       res.status(403).json({ error: 'You can only upload photographs to your own mess.' });
       return;
     }
@@ -658,20 +467,13 @@ app.post('/api/owner/mess/:id/photos', requireOwner, (req: AuthenticatedRequest,
       return;
     }
 
-    const nowIso = new Date().toISOString();
-    db.prepare(
-      'INSERT INTO mess_photos (mess_id, caption, image_data, created_at) VALUES (?, ?, ?, ?)'
-    ).run(messId, caption || 'Fresh Mess Meal', imageData, nowIso);
+    const updatedMess = addMessPhoto({
+      messId,
+      caption: caption || 'Fresh Mess Meal',
+      imageData,
+      setAsCover,
+    });
 
-    if (setAsCover) {
-      db.prepare('UPDATE messes SET custom_image_url = ?, updated_at = ? WHERE id = ?').run(
-        imageData,
-        nowIso,
-        messId
-      );
-    }
-
-    const updatedMess = getMessDetailsById(messId);
     res.status(201).json({
       mess: updatedMess,
       message: 'Food photograph uploaded!',
@@ -686,31 +488,12 @@ app.delete('/api/owner/photos/:photoId', requireOwner, (req: AuthenticatedReques
   const photoId = Number(req.params.photoId);
   const user = req.authUser!;
 
-  const photo = (
-    user.role === 'admin'
-      ? db.prepare('SELECT id, mess_id, image_data FROM mess_photos WHERE id = ?').get(photoId)
-      : db
-          .prepare(
-            `SELECT p.id, p.mess_id, p.image_data
-             FROM mess_photos p
-             INNER JOIN messes m ON m.id = p.mess_id
-             WHERE p.id = ? AND m.owner_id = ?`
-          )
-          .get(photoId, user.userId)
-  ) as { id: number; mess_id: number; image_data: string } | undefined;
-
-  if (!photo) {
+  const updatedMess = removeMessPhoto(photoId, user.userId, user.role === 'admin');
+  if (!updatedMess) {
     res.status(404).json({ error: 'Photograph not found or unauthorized.' });
     return;
   }
 
-  db.prepare('DELETE FROM mess_photos WHERE id = ?').run(photoId);
-  db.prepare('UPDATE messes SET custom_image_url = NULL WHERE id = ? AND custom_image_url = ?').run(
-    photo.mess_id,
-    photo.image_data
-  );
-
-  const updatedMess = getMessDetailsById(photo.mess_id);
   res.json({ mess: updatedMess });
 });
 
@@ -718,7 +501,7 @@ app.patch('/api/owner/enquiries/:enquiryId', requireOwner, (req: AuthenticatedRe
   try {
     const enquiryId = Number(req.params.enquiryId);
     const user = req.authUser!;
-    const status = String(req.body.status || '');
+    const status = String(req.body.status || '') as EnquiryStatus;
     const ownerNote = String(req.body.ownerNote ?? '').trim().slice(0, 300);
 
     if (!['pending', 'approved', 'contacted', 'declined'].includes(status)) {
@@ -726,69 +509,22 @@ app.patch('/api/owner/enquiries/:enquiryId', requireOwner, (req: AuthenticatedRe
       return;
     }
 
-    const existing = (
-      user.role === 'admin'
-        ? db
-            .prepare(
-              `SELECT e.id, e.mess_id, e.status, m.available_seats
-               FROM enquiries e
-               INNER JOIN messes m ON m.id = e.mess_id
-               WHERE e.id = ?`
-            )
-            .get(enquiryId)
-        : db
-            .prepare(
-              `SELECT e.id, e.mess_id, e.status, m.available_seats
-               FROM enquiries e
-               INNER JOIN messes m ON m.id = e.mess_id
-               WHERE e.id = ? AND m.owner_id = ?`
-            )
-            .get(enquiryId, user.userId)
-    ) as { id: number; mess_id: number; status: string; available_seats: number } | undefined;
+    const updated = updateEnquiryRecord(
+      enquiryId,
+      user.userId,
+      user.role === 'admin',
+      status,
+      ownerNote
+    );
 
-    if (!existing) {
+    if (!updated) {
       res.status(404).json({ error: 'Enquiry not found.' });
       return;
     }
 
-    const nowIso = new Date().toISOString();
-
-    const updateTx = db.transaction(() => {
-      if (existing.status !== 'approved' && status === 'approved' && existing.available_seats > 0) {
-        db.prepare('UPDATE messes SET available_seats = available_seats - 1, updated_at = ? WHERE id = ?').run(
-          nowIso,
-          existing.mess_id
-        );
-      } else if (existing.status === 'approved' && status !== 'approved') {
-        db.prepare(
-          'UPDATE messes SET available_seats = MIN(total_seats, available_seats + 1), updated_at = ? WHERE id = ?'
-        ).run(nowIso, existing.mess_id);
-      }
-
-      db.prepare('UPDATE enquiries SET status = ?, owner_note = ?, updated_at = ? WHERE id = ?').run(
-        status,
-        ownerNote,
-        nowIso,
-        enquiryId
-      );
-    });
-
-    updateTx();
-
-    const enquiryRows = db
-      .prepare(
-        `SELECT e.*, m.name as mess_name, m.location as mess_location
-         FROM enquiries e
-         INNER JOIN messes m ON m.id = e.mess_id
-         WHERE e.mess_id = ?
-         ORDER BY e.id DESC`
-      )
-      .all(existing.mess_id) as Parameters<typeof mapEnquiryRow>[0][];
-
-    const updatedMess = getMessDetailsById(existing.mess_id);
     res.json({
-      mess: updatedMess,
-      enquiries: enquiryRows.map(mapEnquiryRow),
+      mess: updated.mess,
+      enquiries: updated.enquiries,
       stats: getSummaryStats(),
     });
   } catch (err) {
@@ -798,92 +534,9 @@ app.patch('/api/owner/enquiries/:enquiryId', requireOwner, (req: AuthenticatedRe
 });
 
 // 7. Administrator Control Panel Routes
-function buildAdminDashboardPayload() {
-  const baseStats = getSummaryStats();
-  const enqCounts = db
-    .prepare(
-      `SELECT
-        COUNT(*) as totalEnquiries,
-        COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) as pendingEnquiries
-       FROM enquiries`
-    )
-    .get() as { totalEnquiries: number; pendingEnquiries: number };
-
-  const revCount = db.prepare('SELECT COUNT(*) as totalReviews FROM reviews').get() as {
-    totalReviews: number;
-  };
-  const ownerCount = db
-    .prepare("SELECT COUNT(*) as totalOwners FROM users WHERE role = 'owner'")
-    .get() as { totalOwners: number };
-
-  const messRows = db.prepare('SELECT * FROM messes ORDER BY id ASC').all() as Parameters<
-    typeof mapMessRow
-  >[0][];
-
-  const enquiryRows = db
-    .prepare(
-      `SELECT e.*, m.name as mess_name, m.location as mess_location
-       FROM enquiries e
-       INNER JOIN messes m ON m.id = e.mess_id
-       ORDER BY e.id DESC`
-    )
-    .all() as Parameters<typeof mapEnquiryRow>[0][];
-
-  const reviewRows = db
-    .prepare(
-      `SELECT r.*, m.name as mess_name
-       FROM reviews r
-       INNER JOIN messes m ON m.id = r.mess_id
-       ORDER BY r.id DESC`
-    )
-    .all() as {
-    id: number;
-    mess_id: number;
-    mess_name: string;
-    student_id: number | null;
-    student_name: string;
-    rating: number;
-    food_quality_rating: number;
-    hygiene_rating: number;
-    comment: string;
-    created_at: string;
-  }[];
-
-  const ownerRows = db
-    .prepare(
-      "SELECT id, name, email, phone, role, college_or_mess, created_at FROM users WHERE role = 'owner' ORDER BY id ASC"
-    )
-    .all() as Parameters<typeof mapUserProfile>[0][];
-
-  return {
-    stats: {
-      ...baseStats,
-      totalEnquiries: enqCounts.totalEnquiries,
-      pendingEnquiries: enqCounts.pendingEnquiries,
-      totalReviews: revCount.totalReviews,
-      totalOwners: ownerCount.totalOwners,
-    },
-    messes: messRows.map(mapMessRow),
-    enquiries: enquiryRows.map(mapEnquiryRow),
-    reviews: reviewRows.map((r) => ({
-      id: r.id,
-      messId: r.mess_id,
-      messName: r.mess_name,
-      studentId: r.student_id,
-      studentName: r.student_name,
-      rating: r.rating,
-      foodQualityRating: r.food_quality_rating,
-      hygieneRating: r.hygiene_rating,
-      comment: r.comment,
-      createdAt: r.created_at,
-    })),
-    owners: ownerRows.map(mapUserProfile),
-  };
-}
-
 app.get('/api/admin/dashboard', requireAdmin, (_req, res) => {
   try {
-    res.json(buildAdminDashboardPayload());
+    res.json(getAdminDashboardSnapshot());
   } catch (err) {
     console.error('Admin dashboard error:', err);
     res.status(500).json({ error: 'Failed to load Admin Dashboard data.' });
@@ -920,75 +573,33 @@ app.post('/api/admin/messes', requireAdmin, (req, res) => {
       res.status(400).json({ error: 'Please provide a valid Owner Email for owner login.' });
       return;
     }
-
-    const existingEmail = db.prepare('SELECT id FROM users WHERE email = ?').get(ownerEmail);
-    if (existingEmail) {
+    if (findUserByEmail(ownerEmail)) {
       res.status(409).json({ error: 'An owner with this email already exists.' });
       return;
     }
 
-    const nowIso = new Date().toISOString();
-    const createTx = db.transaction(() => {
-      const ownerRes = db
-        .prepare(
-          `INSERT INTO users (name, email, phone, password_hash, role, college_or_mess, created_at)
-           VALUES (?, ?, ?, ?, 'owner', ?, ?)`
-        )
-        .run(
-          ownerName,
-          ownerEmail,
-          contactPhone || '9823000000',
-          hashPassword('Owner@123'),
-          name,
-          nowIso
-        );
-
-      const ownerId = Number(ownerRes.lastInsertRowid);
-      const slug = `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${ownerId}`;
-
-      db.prepare(
-        `INSERT INTO messes (
-          slug, owner_id, owner_name, name, category, monthly_price, half_monthly_price,
-          single_plate_price, rating, review_count, available_seats, total_seats,
-          location, area, diet_type, tiffin_delivery, speciality, tags_json,
-          weekly_menu_json, lunch_timing, dinner_timing, button_color, image_key,
-          custom_image_url, contact_phone, description, hygiene_highlights_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        slug,
-        ownerId,
-        ownerName,
-        name,
-        category,
-        monthlyPrice,
-        Math.round(monthlyPrice * 0.55),
-        70,
-        4.2,
-        1,
-        availableSeats,
-        Math.max(availableSeats, totalSeats),
-        location,
-        'Kasba Bawda',
-        dietType,
-        tiffinDelivery ? 1 : 0,
-        speciality,
-        JSON.stringify(['Maharashtrian', dietType, 'Verified']),
-        JSON.stringify(createDefaultMenu()),
-        lunchTiming,
-        dinnerTiming,
-        buttonColor,
-        imageKey,
-        null,
-        contactPhone || '9823000000',
-        `${name} offers homestyle Maharashtrian meals near ${location}.`,
-        JSON.stringify(['RO Filtered Water', 'Hygienic Kitchen', 'Student Friendly']),
-        nowIso
-      );
+    registerOwnerWithMess({
+      name: ownerName,
+      email: ownerEmail,
+      phone: contactPhone || '9823000000',
+      passwordHash: hashPassword('Owner@123'),
+      messName: name,
+      buttonColor,
+      category,
+      monthlyPrice,
+      availableSeats,
+      totalSeats,
+      location,
+      speciality,
+      dietType,
+      tiffinDelivery,
+      lunchTiming,
+      dinnerTiming,
+      imageKey,
     });
 
-    createTx();
     res.status(201).json({
-      ...buildAdminDashboardPayload(),
+      ...getAdminDashboardSnapshot(),
       message: `${name} added! Owner login created (${ownerEmail} / Owner@123).`,
     });
   } catch (err) {
@@ -999,76 +610,54 @@ app.post('/api/admin/messes', requireAdmin, (req, res) => {
 
 app.delete('/api/admin/messes/:id', requireAdmin, (req, res) => {
   const messId = Number(req.params.id);
-  const existing = db.prepare('SELECT id, owner_id, name FROM messes WHERE id = ?').get(messId) as
-    | { id: number; owner_id: number; name: string }
-    | undefined;
-
-  if (!existing) {
+  const deletedName = deleteMessById(messId);
+  if (!deletedName) {
     res.status(404).json({ error: 'Mess listing not found.' });
     return;
   }
 
-  const delTx = db.transaction(() => {
-    db.prepare('DELETE FROM messes WHERE id = ?').run(messId);
-    db.prepare("DELETE FROM users WHERE id = ? AND role = 'owner'").run(existing.owner_id);
-  });
-  delTx();
-
   res.json({
-    ...buildAdminDashboardPayload(),
-    message: `Removed ${existing.name} from the platform.`,
+    ...getAdminDashboardSnapshot(),
+    message: `Removed ${deletedName} from the platform.`,
   });
 });
 
 app.delete('/api/admin/enquiries/:id', requireAdmin, (req, res) => {
   const enquiryId = Number(req.params.id);
-  db.prepare('DELETE FROM enquiries WHERE id = ?').run(enquiryId);
+  deleteEnquiryById(enquiryId);
   res.json({
-    ...buildAdminDashboardPayload(),
+    ...getAdminDashboardSnapshot(),
     message: 'Enquiry deleted.',
   });
 });
 
 app.delete('/api/admin/reviews/:id', requireAdmin, (req, res) => {
   const reviewId = Number(req.params.id);
-  const rev = db
-    .prepare('SELECT id, mess_id, rating FROM reviews WHERE id = ?')
-    .get(reviewId) as { id: number; mess_id: number; rating: number } | undefined;
-
-  if (!rev) {
+  const ok = deleteReviewById(reviewId);
+  if (!ok) {
     res.status(404).json({ error: 'Review not found.' });
     return;
   }
 
-  const delRevTx = db.transaction(() => {
-    db.prepare('DELETE FROM reviews WHERE id = ?').run(reviewId);
-    const currentMess = db
-      .prepare('SELECT rating, review_count FROM messes WHERE id = ?')
-      .get(rev.mess_id) as { rating: number; review_count: number } | undefined;
-
-    if (currentMess && currentMess.review_count > 1) {
-      const nextCount = currentMess.review_count - 1;
-      const nextAvg = Math.min(
-        5,
-        Math.max(1, Number(((currentMess.rating * currentMess.review_count - rev.rating) / nextCount).toFixed(1)))
-      );
-      db.prepare('UPDATE messes SET rating = ?, review_count = ? WHERE id = ?').run(
-        nextAvg,
-        nextCount,
-        rev.mess_id
-      );
-    }
-  });
-  delRevTx();
-
   res.json({
-    ...buildAdminDashboardPayload(),
+    ...getAdminDashboardSnapshot(),
     message: 'Review removed and rating recalculated.',
   });
 });
 
+// Return clean JSON 404 for unknown /api/* routes instead of HTML
+app.use('/api/*', (_req, res) => {
+  res.status(404).json({ error: 'API endpoint not found.' });
+});
+
 async function startServer() {
-  if (process.env.NODE_ENV !== 'production') {
+  // Detect Cloud Run (K_SERVICE), NODE_ENV=production, or `npm start` execution
+  const isDevMode =
+    process.env.npm_lifecycle_event === 'dev' &&
+    process.env.NODE_ENV !== 'production' &&
+    !process.env.K_SERVICE;
+
+  if (isDevMode) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -1077,20 +666,19 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(process.cwd(), 'dist');
-    if (fs.existsSync(distPath)) {
-      app.use(express.static(distPath));
-      app.get('*', (req, res, next) => {
-        if (req.path.startsWith('/api/')) {
-          next();
-          return;
-        }
-        res.sendFile(path.join(distPath, 'index.html'));
-      });
-    }
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      const indexFile = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexFile)) {
+        res.sendFile(indexFile);
+      } else {
+        res.status(503).send('Application frontend build (dist/index.html) is missing.');
+      }
+    });
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Mess Finding System running on http://0.0.0.0:${PORT}`);
+    console.log(`Mess Finding System server listening on http://0.0.0.0:${PORT}`);
   });
 }
 

@@ -1,464 +1,312 @@
-import Database from 'better-sqlite3';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { hashPassword } from './auth.ts';
 import { INITIAL_MESSES } from './seedData.ts';
 import type {
+  AdminDashboardData,
+  ButtonColorVariant,
   DailyMenu,
+  EnquiryStatus,
   MessListing,
   MessPhoto,
   MessReview,
   MessSummaryStats,
   StudentEnquiry,
   UserProfile,
+  UserRole,
 } from '../src/types.ts';
 
-const dbFilePath = process.env.DB_PATH || path.resolve(process.cwd(), 'data', 'mess_system.db');
-const dbDir = path.dirname(dbFilePath);
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+export interface StoredUser {
+  id: number;
+  name: string;
+  email: string;
+  phone: string;
+  passwordHash: string;
+  role: UserRole;
+  collegeOrMess: string;
+  createdAt: string;
 }
 
-export const db = new Database(dbFilePath);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+interface DatabaseSchema {
+  nextIds: {
+    user: number;
+    mess: number;
+    photo: number;
+    enquiry: number;
+    review: number;
+  };
+  users: StoredUser[];
+  messes: MessListing[];
+  photos: MessPhoto[];
+  enquiries: StudentEnquiry[];
+  reviews: MessReview[];
+}
 
-export function initializeDatabase(): void {
-  // Check if an older schema without 'admin' role exists; if so, migrate cleanly
-  const existingUsersTable = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'")
-    .get() as { sql: string } | undefined;
+function resolveWritableStoragePath(): string {
+  // On Cloud Run (K_SERVICE set), /tmp is guaranteed writable in-memory tmpfs
+  const candidates = process.env.K_SERVICE
+    ? [path.join(os.tmpdir(), 'mess_finding_system_db.json')]
+    : [
+        path.resolve(process.cwd(), 'data', 'mess_finding_system_db.json'),
+        path.join(os.tmpdir(), 'mess_finding_system_db.json'),
+      ];
 
-  if (existingUsersTable && !existingUsersTable.sql.includes("'admin'")) {
-    db.pragma('foreign_keys = OFF');
-    const migrateTx = db.transaction(() => {
-      db.exec(`
-        CREATE TABLE users_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          name TEXT NOT NULL,
-          email TEXT NOT NULL UNIQUE,
-          phone TEXT NOT NULL DEFAULT '',
-          password_hash TEXT NOT NULL,
-          role TEXT NOT NULL CHECK (role IN ('admin', 'owner')),
-          college_or_mess TEXT NOT NULL DEFAULT '',
-          created_at TEXT NOT NULL
-        );
-
-        INSERT INTO users_new (id, name, email, phone, password_hash, role, college_or_mess, created_at)
-        SELECT id, name, email, phone, password_hash, role, college_or_mess, created_at
-        FROM users
-        WHERE role = 'owner';
-
-        DROP TABLE IF EXISTS favourites;
-        DROP TABLE users;
-        ALTER TABLE users_new RENAME TO users;
-
-        CREATE TABLE reviews_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          mess_id INTEGER NOT NULL,
-          student_id INTEGER,
-          student_name TEXT NOT NULL,
-          rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
-          food_quality_rating INTEGER NOT NULL CHECK (food_quality_rating >= 1 AND food_quality_rating <= 5),
-          hygiene_rating INTEGER NOT NULL CHECK (hygiene_rating >= 1 AND hygiene_rating <= 5),
-          comment TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          FOREIGN KEY (mess_id) REFERENCES messes(id) ON DELETE CASCADE
-        );
-
-        INSERT INTO reviews_new (id, mess_id, student_id, student_name, rating, food_quality_rating, hygiene_rating, comment, created_at)
-        SELECT id, mess_id, NULL, student_name, rating, food_quality_rating, hygiene_rating, comment, created_at
-        FROM reviews;
-
-        DROP TABLE reviews;
-        ALTER TABLE reviews_new RENAME TO reviews;
-      `);
-    });
-    migrateTx();
-    db.pragma('foreign_keys = ON');
+  for (const filePath of candidates) {
+    try {
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.accessSync(dir, fs.constants.W_OK);
+      return filePath;
+    } catch {
+      // Try next writable location
+    }
   }
+  return path.join(os.tmpdir(), 'mess_finding_system_db.json');
+}
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      email TEXT NOT NULL UNIQUE,
-      phone TEXT NOT NULL DEFAULT '',
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('admin', 'owner')),
-      college_or_mess TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL
-    );
+const STORAGE_FILE = resolveWritableStoragePath();
 
-    CREATE TABLE IF NOT EXISTS messes (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      slug TEXT NOT NULL UNIQUE,
-      owner_id INTEGER NOT NULL,
-      owner_name TEXT NOT NULL,
-      name TEXT NOT NULL,
-      category TEXT NOT NULL,
-      monthly_price INTEGER NOT NULL,
-      half_monthly_price INTEGER NOT NULL,
-      single_plate_price INTEGER NOT NULL,
-      rating REAL NOT NULL,
-      review_count INTEGER NOT NULL,
-      available_seats INTEGER NOT NULL,
-      total_seats INTEGER NOT NULL,
-      location TEXT NOT NULL,
-      area TEXT NOT NULL,
-      diet_type TEXT NOT NULL,
-      tiffin_delivery INTEGER NOT NULL DEFAULT 0,
-      speciality TEXT NOT NULL,
-      tags_json TEXT NOT NULL,
-      weekly_menu_json TEXT NOT NULL,
-      lunch_timing TEXT NOT NULL,
-      dinner_timing TEXT NOT NULL,
-      button_color TEXT NOT NULL,
-      image_key TEXT NOT NULL,
-      custom_image_url TEXT,
-      contact_phone TEXT NOT NULL,
-      description TEXT NOT NULL,
-      hygiene_highlights_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (owner_id) REFERENCES users(id)
-    );
+let state: DatabaseSchema = {
+  nextIds: { user: 1, mess: 1, photo: 1, enquiry: 1, review: 1 },
+  users: [],
+  messes: [],
+  photos: [],
+  enquiries: [],
+  reviews: [],
+};
 
-    CREATE TABLE IF NOT EXISTS mess_photos (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      mess_id INTEGER NOT NULL,
-      caption TEXT NOT NULL,
-      image_data TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      FOREIGN KEY (mess_id) REFERENCES messes(id) ON DELETE CASCADE
-    );
+function persistState(): void {
+  try {
+    const tempFile = `${STORAGE_FILE}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(state, null, 2), 'utf8');
+    fs.renameSync(tempFile, STORAGE_FILE);
+  } catch (err) {
+    console.warn('Database persistence warning (continuing in-memory):', err);
+  }
+}
 
-    CREATE TABLE IF NOT EXISTS enquiries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      mess_id INTEGER NOT NULL,
-      student_id INTEGER,
-      student_name TEXT NOT NULL,
-      student_email TEXT NOT NULL,
-      student_phone TEXT NOT NULL,
-      plan_type TEXT NOT NULL,
-      start_date TEXT NOT NULL,
-      message TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'contacted', 'declined')),
-      owner_note TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (mess_id) REFERENCES messes(id) ON DELETE CASCADE
-    );
+export function createDefaultMenu(): DailyMenu[] {
+  return [
+    { day: 'Monday', lunch: '3 Chapati, Matki Usal, Varan Bhat, Salad', dinner: '2 Bhakri, Pithla, Steamed Rice, Thecha' },
+    { day: 'Tuesday', lunch: '3 Chapati, Bharli Vangi, Amti, Rice', dinner: '3 Chapati, Dal Tadka, Jeera Rice' },
+    { day: 'Wednesday', lunch: '3 Chapati, Veg Kolhapuri, Varan Bhat, Taak', dinner: '3 Chapati, Aloo Gobi, Dal Fry, Rice' },
+    { day: 'Thursday', lunch: '3 Chapati, Chavali Usal, Kadhi, Rice', dinner: '2 Bhakri, Zunka, Steamed Rice' },
+    { day: 'Friday', lunch: '3 Chapati, Shev Bhaji, Amti, Indrayani Rice', dinner: '3 Chapati, Akkha Masoor, Jeera Rice' },
+    { day: 'Saturday', lunch: '3 Chapati, Kala Chana Rassa, Varan Bhat', dinner: 'Dal Khichdi, Papad, Koshimbir' },
+    { day: 'Sunday', lunch: 'Sunday Feast: Masale Bhat, Chapati, Kurma, Gulab Jamun', dinner: 'Sunday Evening Closed', special: 'Gulab Jamun' },
+  ];
+}
 
-    CREATE TABLE IF NOT EXISTS reviews (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      mess_id INTEGER NOT NULL,
-      student_id INTEGER,
-      student_name TEXT NOT NULL,
-      rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
-      food_quality_rating INTEGER NOT NULL CHECK (food_quality_rating >= 1 AND food_quality_rating <= 5),
-      hygiene_rating INTEGER NOT NULL CHECK (hygiene_rating >= 1 AND hygiene_rating <= 5),
-      comment TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      FOREIGN KEY (mess_id) REFERENCES messes(id) ON DELETE CASCADE
-    );
-  `);
-
+function buildInitialSeed(): DatabaseSchema {
   const nowIso = new Date().toISOString();
-
-  // Always ensure the System Administrator account exists
-  const adminExists = db
-    .prepare("SELECT id FROM users WHERE email = 'admin@messsystem.in'")
-    .get();
-
-  if (!adminExists) {
-    db.prepare(
-      `INSERT INTO users (name, email, phone, password_hash, role, college_or_mess, created_at)
-       VALUES (?, ?, ?, ?, 'admin', ?, ?)`
-    ).run(
-      'System Administrator',
-      'admin@messsystem.in',
-      '9823000001',
-      hashPassword('Admin@123'),
-      'Mess Finding System Admin',
-      nowIso
-    );
-  }
-
-  const countRow = db.prepare('SELECT COUNT(*) as count FROM messes').get() as { count: number };
-  if (countRow.count > 0) {
-    return;
-  }
-
+  const adminPasswordHash = hashPassword('Admin@123');
   const ownerPasswordHash = hashPassword('Owner@123');
 
-  const insertUser = db.prepare(`
-    INSERT INTO users (name, email, phone, password_hash, role, college_or_mess, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
+  const seeded: DatabaseSchema = {
+    nextIds: { user: 1, mess: 1, photo: 1, enquiry: 1, review: 1 },
+    users: [],
+    messes: [],
+    photos: [],
+    enquiries: [],
+    reviews: [],
+  };
 
-  const insertMess = db.prepare(`
-    INSERT INTO messes (
-      slug, owner_id, owner_name, name, category, monthly_price, half_monthly_price,
-      single_plate_price, rating, review_count, available_seats, total_seats,
-      location, area, diet_type, tiffin_delivery, speciality, tags_json,
-      weekly_menu_json, lunch_timing, dinner_timing, button_color, image_key,
-      custom_image_url, contact_phone, description, hygiene_highlights_json, updated_at
-    ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?
-    )
-  `);
-
-  const insertReview = db.prepare(`
-    INSERT INTO reviews (
-      mess_id, student_id, student_name, rating, food_quality_rating, hygiene_rating, comment, created_at
-    ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const insertEnquiry = db.prepare(`
-    INSERT INTO enquiries (
-      mess_id, student_id, student_name, student_email, student_phone,
-      plan_type, start_date, message, status, owner_note, created_at, updated_at
-    ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const seedTx = db.transaction(() => {
-    for (const item of INITIAL_MESSES) {
-      const ownerRes = insertUser.run(
-        item.ownerName,
-        item.ownerEmail.toLowerCase(),
-        item.ownerPhone,
-        ownerPasswordHash,
-        'owner',
-        item.name,
-        nowIso
-      );
-      const ownerId = Number(ownerRes.lastInsertRowid);
-
-      const messRes = insertMess.run(
-        item.slug,
-        ownerId,
-        item.ownerName,
-        item.name,
-        item.category,
-        item.monthlyPrice,
-        item.halfMonthlyPrice,
-        item.singlePlatePrice,
-        item.rating,
-        item.reviewCount,
-        item.availableSeats,
-        item.totalSeats,
-        item.location,
-        item.area,
-        item.dietType,
-        item.tiffinDelivery ? 1 : 0,
-        item.speciality,
-        JSON.stringify(item.tags),
-        JSON.stringify(item.weeklyMenu),
-        item.lunchTiming,
-        item.dinnerTiming,
-        item.buttonColor,
-        item.imageKey,
-        null,
-        item.ownerPhone,
-        item.description,
-        JSON.stringify(item.hygieneHighlights),
-        nowIso
-      );
-
-      const messId = Number(messRes.lastInsertRowid);
-
-      for (const rev of item.initialReviews) {
-        const revDate = new Date(Date.now() - rev.daysAgo * 86400 * 1000).toISOString();
-        insertReview.run(
-          messId,
-          rev.studentName,
-          rev.rating,
-          rev.foodQualityRating,
-          rev.hygieneRating,
-          rev.comment,
-          revDate
-        );
-      }
-
-      if (item.slug === 'annapurna-mess' || item.slug === 'randive-mess') {
-        insertEnquiry.run(
-          messId,
-          'Arjun Patil',
-          'arjun.patil@student.edu',
-          '9890123456',
-          'Full Monthly (Lunch + Dinner)',
-          new Date(Date.now() + 2 * 86400 * 1000).toISOString().slice(0, 10),
-          'Hello, I stay near Kasba Bawda Datta Mandir and want to join from next week. Are 2 seats open for me and my roommate?',
-          'pending',
-          '',
-          nowIso,
-          nowIso
-        );
-      }
-    }
+  // 1. Seed System Administrator
+  seeded.users.push({
+    id: seeded.nextIds.user++,
+    name: 'System Administrator',
+    email: 'admin@messsystem.in',
+    phone: '9823000001',
+    passwordHash: adminPasswordHash,
+    role: 'admin',
+    collegeOrMess: 'Mess Finding System Admin',
+    createdAt: nowIso,
   });
 
-  seedTx();
+  // 2. Seed all 10 Maharashtrian Messes + Owners + Reviews + Sample Enquiries
+  for (const item of INITIAL_MESSES) {
+    const ownerId = seeded.nextIds.user++;
+    seeded.users.push({
+      id: ownerId,
+      name: item.ownerName,
+      email: item.ownerEmail.toLowerCase(),
+      phone: item.ownerPhone,
+      passwordHash: ownerPasswordHash,
+      role: 'owner',
+      collegeOrMess: item.name,
+      createdAt: nowIso,
+    });
+
+    const messId = seeded.nextIds.mess++;
+    seeded.messes.push({
+      id: messId,
+      slug: item.slug,
+      ownerId,
+      ownerName: item.ownerName,
+      name: item.name,
+      category: item.category,
+      monthlyPrice: item.monthlyPrice,
+      halfMonthlyPrice: item.halfMonthlyPrice,
+      singlePlatePrice: item.singlePlatePrice,
+      rating: item.rating,
+      reviewCount: item.reviewCount,
+      availableSeats: item.availableSeats,
+      totalSeats: item.totalSeats,
+      location: item.location,
+      area: item.area,
+      dietType: item.dietType,
+      tiffinDelivery: item.tiffinDelivery,
+      speciality: item.speciality,
+      tags: [...item.tags],
+      weeklyMenu: item.weeklyMenu.map((d) => ({ ...d })),
+      lunchTiming: item.lunchTiming,
+      dinnerTiming: item.dinnerTiming,
+      buttonColor: item.buttonColor,
+      imageKey: item.imageKey,
+      customImageUrl: null,
+      contactPhone: item.ownerPhone,
+      description: item.description,
+      hygieneHighlights: [...item.hygieneHighlights],
+      updatedAt: nowIso,
+    });
+
+    for (const rev of item.initialReviews) {
+      const revDate = new Date(Date.now() - rev.daysAgo * 86400 * 1000).toISOString();
+      seeded.reviews.push({
+        id: seeded.nextIds.review++,
+        messId,
+        messName: item.name,
+        studentId: null,
+        studentName: rev.studentName,
+        rating: rev.rating,
+        foodQualityRating: rev.foodQualityRating,
+        hygieneRating: rev.hygieneRating,
+        comment: rev.comment,
+        createdAt: revDate,
+      });
+    }
+
+    if (item.slug === 'annapurna-mess' || item.slug === 'randive-mess') {
+      seeded.enquiries.push({
+        id: seeded.nextIds.enquiry++,
+        messId,
+        messName: item.name,
+        messLocation: item.location,
+        studentId: null,
+        studentName: 'Arjun Patil',
+        studentEmail: 'arjun.patil@student.edu',
+        studentPhone: '9890123456',
+        planType: 'Full Monthly (Lunch + Dinner)',
+        startDate: new Date(Date.now() + 2 * 86400 * 1000).toISOString().slice(0, 10),
+        message:
+          'Hello, I stay near Kasba Bawda Datta Mandir and want to join from next week. Are 2 seats open for me and my roommate?',
+        status: 'pending',
+        ownerNote: '',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+    }
+  }
+
+  return seeded;
 }
 
-interface RawMessRow {
-  id: number;
-  slug: string;
-  owner_id: number;
-  owner_name: string;
-  name: string;
-  category: string;
-  monthly_price: number;
-  half_monthly_price: number;
-  single_plate_price: number;
-  rating: number;
-  review_count: number;
-  available_seats: number;
-  total_seats: number;
-  location: string;
-  area: string;
-  diet_type: 'Pure Veg' | 'Veg & Non-Veg';
-  tiffin_delivery: number;
-  speciality: string;
-  tags_json: string;
-  weekly_menu_json: string;
-  lunch_timing: string;
-  dinner_timing: string;
-  button_color: 'orange' | 'blue' | 'green';
-  image_key: string;
-  custom_image_url: string | null;
-  contact_phone: string;
-  description: string;
-  hygiene_highlights_json: string;
-  updated_at: string;
+export function initializeDatabase(): void {
+  try {
+    if (fs.existsSync(STORAGE_FILE)) {
+      const raw = fs.readFileSync(STORAGE_FILE, 'utf8');
+      const parsed = JSON.parse(raw) as DatabaseSchema;
+      if (parsed && Array.isArray(parsed.messes) && parsed.messes.length > 0) {
+        state = parsed;
+        // Guarantee admin user exists
+        const hasAdmin = state.users.some((u) => u.email === 'admin@messsystem.in');
+        if (!hasAdmin) {
+          state.users.unshift({
+            id: state.nextIds.user++,
+            name: 'System Administrator',
+            email: 'admin@messsystem.in',
+            phone: '9823000001',
+            passwordHash: hashPassword('Admin@123'),
+            role: 'admin',
+            collegeOrMess: 'Mess Finding System Admin',
+            createdAt: new Date().toISOString(),
+          });
+          persistState();
+        }
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn('Re-initializing seed database:', err);
+  }
+
+  state = buildInitialSeed();
+  persistState();
 }
 
-export function mapMessRow(row: RawMessRow): MessListing {
-  let tags: string[] = [];
-  let weeklyMenu: DailyMenu[] = [];
-  let hygieneHighlights: string[] = [];
-  try {
-    tags = JSON.parse(row.tags_json);
-  } catch {
-    tags = [];
-  }
-  try {
-    weeklyMenu = JSON.parse(row.weekly_menu_json);
-  } catch {
-    weeklyMenu = [];
-  }
-  try {
-    hygieneHighlights = JSON.parse(row.hygiene_highlights_json);
-  } catch {
-    hygieneHighlights = [];
-  }
-
+export function toPublicUser(u: StoredUser): UserProfile {
   return {
-    id: row.id,
-    slug: row.slug,
-    ownerId: row.owner_id,
-    ownerName: row.owner_name,
-    name: row.name,
-    category: row.category,
-    monthlyPrice: row.monthly_price,
-    halfMonthlyPrice: row.half_monthly_price,
-    singlePlatePrice: row.single_plate_price,
-    rating: Number(row.rating.toFixed(1)),
-    reviewCount: row.review_count,
-    availableSeats: row.available_seats,
-    totalSeats: row.total_seats,
-    location: row.location,
-    area: row.area,
-    dietType: row.diet_type,
-    tiffinDelivery: Boolean(row.tiffin_delivery),
-    speciality: row.speciality,
-    tags,
-    weeklyMenu,
-    lunchTiming: row.lunch_timing,
-    dinnerTiming: row.dinner_timing,
-    buttonColor: row.button_color,
-    imageKey: row.image_key,
-    customImageUrl: row.custom_image_url,
-    contactPhone: row.contact_phone,
-    description: row.description,
-    hygieneHighlights,
-    updatedAt: row.updated_at,
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    phone: u.phone,
+    role: u.role,
+    collegeOrMess: u.collegeOrMess,
+    createdAt: u.createdAt,
   };
+}
+
+export function findUserByEmail(email: string): StoredUser | undefined {
+  const normalized = email.trim().toLowerCase();
+  return state.users.find((u) => u.email.toLowerCase() === normalized);
+}
+
+export function findUserById(id: number): StoredUser | undefined {
+  return state.users.find((u) => u.id === id);
 }
 
 export function getSummaryStats(): MessSummaryStats {
-  const row = db
-    .prepare(
-      `SELECT
-        COUNT(*) as totalMesses,
-        COALESCE(MIN(monthly_price), 2300) as minMonthlyPrice,
-        COALESCE(AVG(rating), 4.2) as avgRating,
-        COALESCE(SUM(available_seats), 0) as totalAvailableSeats
-      FROM messes`
-    )
-    .get() as {
-    totalMesses: number;
-    minMonthlyPrice: number;
-    avgRating: number;
-    totalAvailableSeats: number;
-  };
+  if (state.messes.length === 0) {
+    return {
+      totalMesses: 0,
+      minMonthlyPrice: 0,
+      avgRating: 0,
+      totalAvailableSeats: 0,
+    };
+  }
+  const totalMesses = state.messes.length;
+  const minMonthlyPrice = Math.min(...state.messes.map((m) => m.monthlyPrice));
+  const avgRating = Number(
+    (state.messes.reduce((sum, m) => sum + m.rating, 0) / totalMesses).toFixed(1)
+  );
+  const totalAvailableSeats = state.messes.reduce((sum, m) => sum + m.availableSeats, 0);
 
   return {
-    totalMesses: row.totalMesses,
-    minMonthlyPrice: row.minMonthlyPrice,
-    avgRating: Number(row.avgRating.toFixed(1)),
-    totalAvailableSeats: row.totalAvailableSeats,
+    totalMesses,
+    minMonthlyPrice,
+    avgRating,
+    totalAvailableSeats,
   };
 }
 
+export function listAllMesses(): MessListing[] {
+  return state.messes.map((m) => ({ ...m }));
+}
+
 export function getMessDetailsById(messId: number): MessListing | null {
-  const row = db.prepare('SELECT * FROM messes WHERE id = ?').get(messId) as RawMessRow | undefined;
-  if (!row) return null;
-  const mess = mapMessRow(row);
+  const mess = state.messes.find((m) => m.id === messId);
+  if (!mess) return null;
 
-  const photosRows = db
-    .prepare('SELECT id, mess_id, caption, image_data, created_at FROM mess_photos WHERE mess_id = ? ORDER BY id DESC')
-    .all(messId) as { id: number; mess_id: number; caption: string; image_data: string; created_at: string }[];
+  const photos = state.photos
+    .filter((p) => p.messId === messId)
+    .sort((a, b) => b.id - a.id);
 
-  const reviewsRows = db
-    .prepare(
-      'SELECT id, mess_id, student_id, student_name, rating, food_quality_rating, hygiene_rating, comment, created_at FROM reviews WHERE mess_id = ? ORDER BY id DESC'
-    )
-    .all(messId) as {
-    id: number;
-    mess_id: number;
-    student_id: number | null;
-    student_name: string;
-    rating: number;
-    food_quality_rating: number;
-    hygiene_rating: number;
-    comment: string;
-    created_at: string;
-  }[];
-
-  const photos: MessPhoto[] = photosRows.map((p) => ({
-    id: p.id,
-    messId: p.mess_id,
-    caption: p.caption,
-    imageData: p.image_data,
-    createdAt: p.created_at,
-  }));
-
-  const reviews: MessReview[] = reviewsRows.map((r) => ({
-    id: r.id,
-    messId: r.mess_id,
-    studentId: r.student_id,
-    studentName: r.student_name,
-    rating: r.rating,
-    foodQualityRating: r.food_quality_rating,
-    hygieneRating: r.hygiene_rating,
-    comment: r.comment,
-    createdAt: r.created_at,
-  }));
+  const reviews = state.reviews
+    .filter((r) => r.messId === messId)
+    .sort((a, b) => b.id - a.id);
 
   return {
     ...mess,
@@ -467,58 +315,332 @@ export function getMessDetailsById(messId: number): MessListing | null {
   };
 }
 
-export function mapUserProfile(row: {
-  id: number;
+export function getMessByOwnerId(ownerId: number): MessListing | null {
+  const found = state.messes.find((m) => m.ownerId === ownerId);
+  return found ? getMessDetailsById(found.id) : null;
+}
+
+export function registerOwnerWithMess(params: {
   name: string;
   email: string;
   phone: string;
-  role: 'admin' | 'owner';
-  college_or_mess: string;
-  created_at: string;
-}): UserProfile {
+  passwordHash: string;
+  messName: string;
+  buttonColor?: ButtonColorVariant;
+  category?: string;
+  monthlyPrice?: number;
+  availableSeats?: number;
+  totalSeats?: number;
+  location?: string;
+  speciality?: string;
+  dietType?: 'Pure Veg' | 'Veg & Non-Veg';
+  tiffinDelivery?: boolean;
+  lunchTiming?: string;
+  dinnerTiming?: string;
+  imageKey?: string;
+}): StoredUser {
+  const nowIso = new Date().toISOString();
+  const userId = state.nextIds.user++;
+  const newUser: StoredUser = {
+    id: userId,
+    name: params.name,
+    email: params.email.toLowerCase(),
+    phone: params.phone,
+    passwordHash: params.passwordHash,
+    role: 'owner',
+    collegeOrMess: params.messName,
+    createdAt: nowIso,
+  };
+  state.users.push(newUser);
+
+  const messId = state.nextIds.mess++;
+  const monthlyPrice = params.monthlyPrice || 2600;
+  const availableSeats = params.availableSeats ?? 20;
+  const totalSeats = Math.max(availableSeats, params.totalSeats || 45);
+  const slug = `${params.messName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')}-${messId}`;
+
+  state.messes.push({
+    id: messId,
+    slug,
+    ownerId: userId,
+    ownerName: params.name,
+    name: params.messName,
+    category: (params.category || 'NEW LISTING').toUpperCase(),
+    monthlyPrice,
+    halfMonthlyPrice: Math.round(monthlyPrice * 0.55),
+    singlePlatePrice: 70,
+    rating: 4.2,
+    reviewCount: 1,
+    availableSeats,
+    totalSeats,
+    location: params.location || 'Near College Road, Kasba Bawda, Kolhapur',
+    area: 'Kasba Bawda',
+    dietType: params.dietType || 'Pure Veg',
+    tiffinDelivery: params.tiffinDelivery ?? true,
+    speciality: params.speciality || 'Chapati, Bhakri, Varan Bhat, Homestyle Bhaji',
+    tags: ['Homestyle', params.dietType || 'Pure Veg', 'Maharashtrian'],
+    weeklyMenu: createDefaultMenu(),
+    lunchTiming: params.lunchTiming || '12:30 PM – 2:45 PM',
+    dinnerTiming: params.dinnerTiming || '7:30 PM – 9:30 PM',
+    buttonColor: params.buttonColor || 'orange',
+    imageKey: params.imageKey || 'pithla_bhakri',
+    customImageUrl: null,
+    contactPhone: params.phone,
+    description: `${params.messName} offers fresh homestyle Maharashtrian meals near campus.`,
+    hygieneHighlights: ['RO Drinking Water', 'Fresh Daily Cooking', 'Clean Dining Space'],
+    updatedAt: nowIso,
+  });
+
+  persistState();
+  return newUser;
+}
+
+export function createStudentEnquiry(params: {
+  messId: number;
+  studentName: string;
+  studentEmail: string;
+  studentPhone: string;
+  planType: string;
+  startDate: string;
+  message: string;
+}): StudentEnquiry | null {
+  const mess = state.messes.find((m) => m.id === params.messId);
+  if (!mess) return null;
+
+  const nowIso = new Date().toISOString();
+  const enquiry: StudentEnquiry = {
+    id: state.nextIds.enquiry++,
+    messId: mess.id,
+    messName: mess.name,
+    messLocation: mess.location,
+    studentId: null,
+    studentName: params.studentName,
+    studentEmail: params.studentEmail,
+    studentPhone: params.studentPhone,
+    planType: params.planType,
+    startDate: params.startDate,
+    message: params.message,
+    status: 'pending',
+    ownerNote: '',
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+
+  state.enquiries.unshift(enquiry);
+  persistState();
+  return enquiry;
+}
+
+export function addStudentReview(params: {
+  messId: number;
+  studentName: string;
+  rating: number;
+  foodQualityRating: number;
+  hygieneRating: number;
+  comment: string;
+}): MessListing | null {
+  const mess = state.messes.find((m) => m.id === params.messId);
+  if (!mess) return null;
+
+  const nowIso = new Date().toISOString();
+  state.reviews.unshift({
+    id: state.nextIds.review++,
+    messId: mess.id,
+    messName: mess.name,
+    studentId: null,
+    studentName: params.studentName,
+    rating: params.rating,
+    foodQualityRating: params.foodQualityRating,
+    hygieneRating: params.hygieneRating,
+    comment: params.comment,
+    createdAt: nowIso,
+  });
+
+  const nextCount = mess.reviewCount + 1;
+  mess.rating = Number(
+    ((mess.rating * mess.reviewCount + params.rating) / nextCount).toFixed(1)
+  );
+  mess.reviewCount = nextCount;
+  mess.updatedAt = nowIso;
+
+  persistState();
+  return getMessDetailsById(mess.id);
+}
+
+export function listEnquiriesForMess(messId: number): StudentEnquiry[] {
+  return state.enquiries
+    .filter((e) => e.messId === messId)
+    .sort((a, b) => b.id - a.id);
+}
+
+export function updateMessRecord(
+  messId: number,
+  updates: Partial<MessListing>
+): MessListing | null {
+  const mess = state.messes.find((m) => m.id === messId);
+  if (!mess) return null;
+
+  Object.assign(mess, updates, { updatedAt: new Date().toISOString() });
+  // Keep enquiry & review messName synced if mess renamed
+  if (updates.name) {
+    for (const e of state.enquiries) {
+      if (e.messId === messId) e.messName = updates.name;
+    }
+    for (const r of state.reviews) {
+      if (r.messId === messId) r.messName = updates.name;
+    }
+  }
+  persistState();
+  return getMessDetailsById(messId);
+}
+
+export function addMessPhoto(params: {
+  messId: number;
+  caption: string;
+  imageData: string;
+  setAsCover: boolean;
+}): MessListing | null {
+  const mess = state.messes.find((m) => m.id === params.messId);
+  if (!mess) return null;
+
+  const nowIso = new Date().toISOString();
+  state.photos.unshift({
+    id: state.nextIds.photo++,
+    messId: mess.id,
+    caption: params.caption,
+    imageData: params.imageData,
+    createdAt: nowIso,
+  });
+
+  if (params.setAsCover) {
+    mess.customImageUrl = params.imageData;
+    mess.updatedAt = nowIso;
+  }
+
+  persistState();
+  return getMessDetailsById(mess.id);
+}
+
+export function removeMessPhoto(
+  photoId: number,
+  requesterId: number,
+  isAdmin: boolean
+): MessListing | null {
+  const idx = state.photos.findIndex((p) => p.id === photoId);
+  if (idx === -1) return null;
+
+  const photo = state.photos[idx];
+  const mess = state.messes.find((m) => m.id === photo.messId);
+  if (!mess) return null;
+  if (!isAdmin && mess.ownerId !== requesterId) return null;
+
+  state.photos.splice(idx, 1);
+  if (mess.customImageUrl === photo.imageData) {
+    mess.customImageUrl = null;
+  }
+
+  persistState();
+  return getMessDetailsById(mess.id);
+}
+
+export function updateEnquiryRecord(
+  enquiryId: number,
+  requesterId: number,
+  isAdmin: boolean,
+  status: EnquiryStatus,
+  ownerNote: string
+): { mess: MessListing; enquiries: StudentEnquiry[] } | null {
+  const enquiry = state.enquiries.find((e) => e.id === enquiryId);
+  if (!enquiry) return null;
+
+  const mess = state.messes.find((m) => m.id === enquiry.messId);
+  if (!mess) return null;
+  if (!isAdmin && mess.ownerId !== requesterId) return null;
+
+  if (enquiry.status !== 'approved' && status === 'approved' && mess.availableSeats > 0) {
+    mess.availableSeats -= 1;
+  } else if (enquiry.status === 'approved' && status !== 'approved') {
+    mess.availableSeats = Math.min(mess.totalSeats, mess.availableSeats + 1);
+  }
+
+  const nowIso = new Date().toISOString();
+  enquiry.status = status;
+  enquiry.ownerNote = ownerNote;
+  enquiry.updatedAt = nowIso;
+  mess.updatedAt = nowIso;
+
+  persistState();
   return {
-    id: row.id,
-    name: row.name,
-    email: row.email,
-    phone: row.phone,
-    role: row.role,
-    collegeOrMess: row.college_or_mess,
-    createdAt: row.created_at,
+    mess: getMessDetailsById(mess.id)!,
+    enquiries: listEnquiriesForMess(mess.id),
   };
 }
 
-export function mapEnquiryRow(row: {
-  id: number;
-  mess_id: number;
-  mess_name: string;
-  mess_location?: string;
-  student_id: number | null;
-  student_name: string;
-  student_email: string;
-  student_phone: string;
-  plan_type: string;
-  start_date: string;
-  message: string;
-  status: 'pending' | 'approved' | 'contacted' | 'declined';
-  owner_note: string;
-  created_at: string;
-  updated_at: string;
-}): StudentEnquiry {
+export function getAdminDashboardSnapshot(): AdminDashboardData {
+  const baseStats = getSummaryStats();
+  const totalEnquiries = state.enquiries.length;
+  const pendingEnquiries = state.enquiries.filter((e) => e.status === 'pending').length;
+  const totalReviews = state.reviews.length;
+  const owners = state.users.filter((u) => u.role === 'owner').map(toPublicUser);
+
   return {
-    id: row.id,
-    messId: row.mess_id,
-    messName: row.mess_name,
-    messLocation: row.mess_location,
-    studentId: row.student_id,
-    studentName: row.student_name,
-    studentEmail: row.student_email,
-    studentPhone: row.student_phone,
-    planType: row.plan_type,
-    startDate: row.start_date,
-    message: row.message,
-    status: row.status,
-    ownerNote: row.owner_note,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    stats: {
+      ...baseStats,
+      totalEnquiries,
+      pendingEnquiries,
+      totalReviews,
+      totalOwners: owners.length,
+    },
+    messes: listAllMesses(),
+    enquiries: [...state.enquiries].sort((a, b) => b.id - a.id),
+    reviews: [...state.reviews].sort((a, b) => b.id - a.id),
+    owners,
   };
+}
+
+export function deleteMessById(messId: number): string | null {
+  const idx = state.messes.findIndex((m) => m.id === messId);
+  if (idx === -1) return null;
+
+  const [removed] = state.messes.splice(idx, 1);
+  state.users = state.users.filter((u) => !(u.id === removed.ownerId && u.role === 'owner'));
+  state.photos = state.photos.filter((p) => p.messId !== messId);
+  state.enquiries = state.enquiries.filter((e) => e.messId !== messId);
+  state.reviews = state.reviews.filter((r) => r.messId !== messId);
+
+  persistState();
+  return removed.name;
+}
+
+export function deleteEnquiryById(enquiryId: number): boolean {
+  const before = state.enquiries.length;
+  state.enquiries = state.enquiries.filter((e) => e.id !== enquiryId);
+  if (state.enquiries.length !== before) {
+    persistState();
+    return true;
+  }
+  return false;
+}
+
+export function deleteReviewById(reviewId: number): boolean {
+  const idx = state.reviews.findIndex((r) => r.id === reviewId);
+  if (idx === -1) return false;
+
+  const [removed] = state.reviews.splice(idx, 1);
+  const mess = state.messes.find((m) => m.id === removed.messId);
+  if (mess && mess.reviewCount > 1) {
+    const nextCount = mess.reviewCount - 1;
+    const nextAvg = Math.min(
+      5,
+      Math.max(1, Number(((mess.rating * mess.reviewCount - removed.rating) / nextCount).toFixed(1)))
+    );
+    mess.rating = nextAvg;
+    mess.reviewCount = nextCount;
+  }
+
+  persistState();
+  return true;
 }
