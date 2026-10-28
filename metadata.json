@@ -1,0 +1,6 @@
+{
+  "name": "Mess Finding System",
+  "description": "Find Your Daily Meal, Sorted — Discover, compare, and enquire about affordable Maharashtrian mess services for college students.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
